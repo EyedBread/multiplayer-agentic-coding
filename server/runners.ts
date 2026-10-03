@@ -23,6 +23,7 @@ type Connection = {
   credential: Credentials;
   ready: boolean;
   pending: Map<string, Pending>;
+  retiredAgents: Set<string>;
 };
 type Hooks = {
   auth(req: Request): { room: Room; session: Session };
@@ -157,7 +158,13 @@ export class RunnerRegistry {
       return;
     }
     this.wss.handleUpgrade(req, socket, head, (ws) => {
-      const connection: Connection = { ws, credential, ready: false, pending: new Map() };
+      const connection: Connection = {
+        ws,
+        credential,
+        ready: false,
+        pending: new Map(),
+        retiredAgents: new Set(),
+      };
       this.connections.set(credential.runner.id, connection);
       credential.runner.status = 'connecting';
       this.hooks.broadcast(credential.room);
@@ -202,6 +209,7 @@ export class RunnerRegistry {
               pending.reject(new Error(message.error.slice(0, 3000)));
             else pending.resolve(message.result);
           } else if (connection.ready) {
+            if (connection.retiredAgents.has(message.agentId)) return;
             const agent = credential.room.agents.find(
               (a) =>
                 a.id === message.agentId &&
@@ -252,6 +260,12 @@ export class RunnerRegistry {
         }
       });
     });
+  }
+  retireAgent(runnerId: string, agentId: string) {
+    const retired = this.connections.get(runnerId)?.retiredAgents;
+    if (!retired) return;
+    retired.add(agentId);
+    if (retired.size > 1000) retired.delete(retired.values().next().value!);
   }
   call(
     runnerId: string,

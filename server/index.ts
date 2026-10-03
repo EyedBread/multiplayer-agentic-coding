@@ -49,6 +49,7 @@ type Runtime = {
   demoTimer?: NodeJS.Timeout;
 };
 const runtimes = new Map<string, Runtime>();
+const closingAgents = new Set<string>();
 const responders = new Map<string, (answer: string) => void | Promise<void>>();
 const requestDecisions = new Map<string, string[]>();
 const broadcastTimers = new Map<string, NodeJS.Timeout>();
@@ -103,6 +104,7 @@ function requireOwner(room: Room, agent: Agent, session: Session) {
         status: 403,
       },
     );
+  if (closingAgents.has(agent.id)) throw new Error('This session is closing.');
 }
 function newSession(room: Room, memberId: string): Session {
   const session = { roomId: room.id, memberId, token: token() };
@@ -186,6 +188,7 @@ function codexEvent(
   agent: Agent,
   message: { id?: string | number; method?: string; params?: any },
 ) {
+  if (closingAgents.has(agent.id) || !room.agents.includes(agent)) return;
   const p = message.params || {};
   const client = runtimes.get(agent.id)?.client;
   if (!client) return;
@@ -394,6 +397,7 @@ function codexEvent(
 }
 
 function updateFiles(room: Room, agent: Agent, files: string[]) {
+  if (closingAgents.has(agent.id) || !room.agents.includes(agent)) return;
   if (JSON.stringify(files) === JSON.stringify(agent.files)) return;
   const old = new Set(room.overlaps.map((o) => o.path));
   agent.files = files;
@@ -433,7 +437,9 @@ const runnerRegistry = new RunnerRegistry({
       room,
       `${runner.name} connected with ${runner.harness === 'claude' ? 'Claude Code' : 'Codex'}`,
     );
-    for (const agent of room.agents.filter((a) => a.runnerId === runner.id))
+    for (const agent of room.agents.filter(
+      (a) => a.runnerId === runner.id && !closingAgents.has(a.id),
+    ))
       void connectRemoteAgent(room, agent);
     broadcast(room);
   },
@@ -455,6 +461,7 @@ const runnerRegistry = new RunnerRegistry({
   event: codexEvent,
   files: updateFiles,
   error(room, agent, message) {
+    if (closingAgents.has(agent.id) || !room.agents.includes(agent)) return;
     agent.status = 'error';
     agent.error = message;
     entry(agent, 'error', message);
@@ -484,6 +491,7 @@ app.get('/api/config', async (req, res) => {
     canHost: true,
     canManageProjects: local(req.socket.remoteAddress),
     modelSelection: true,
+    closeSessions: true,
     projects: await projects.list(local(req.socket.remoteAddress)),
   });
 });
@@ -645,6 +653,7 @@ app.post('/api/agents', async (req, res) => {
         worktree.cwd,
         (message) => codexEvent(room, agent, message),
         (message) => {
+          if (closingAgents.has(agent.id) || !room.agents.includes(agent)) return;
           agent.status = 'error';
           agent.error = message;
           entry(agent, 'error', message);
@@ -734,6 +743,47 @@ app.post('/api/agents/:id/stop', async (req, res) => {
   } else await runtime?.client?.interrupt();
   broadcast(room);
   res.json({ ok: true });
+});
+app.post('/api/agents/:id/close', async (req, res) => {
+  const { room, session } = auth(req);
+  const agent = getAgent(room, String(req.params.id));
+  requireOwner(room, agent, session);
+  if (agent.status === 'starting')
+    throw new Error('Wait for the session to connect before closing it.');
+  if (closingAgents.has(agent.id)) throw new Error('This session is already closing.');
+  closingAgents.add(agent.id);
+  agent.status = 'closing';
+  const runtime = runtimes.get(agent.id);
+  clearTimeout(runtime?.demoTimer);
+  cancelRequests(room, agent);
+  broadcast(room);
+  try {
+    if (agent.runnerId) {
+      if (room.runners.find((runner) => runner.id === agent.runnerId)?.status === 'online') {
+        try {
+          await runnerRegistry.call(agent.runnerId, agent.id, 'close');
+        } catch (error) {
+          if (room.runners.find((runner) => runner.id === agent.runnerId)?.status === 'online')
+            throw error;
+        }
+      }
+      runnerRegistry.retireAgent(agent.runnerId, agent.id);
+    } else runtime?.client?.close();
+    runtimes.delete(agent.id);
+    room.agents = room.agents.filter((item) => item.id !== agent.id);
+    room.overlaps = overlaps(room.agents);
+    activity(room, `${agent.name} session closed. Worktree files preserved.`);
+    res.json({ ok: true });
+  } catch {
+    agent.status = 'error';
+    agent.error =
+      'Could not confirm the session stopped. Try closing it again or reconnect the runner.';
+    entry(agent, 'error', agent.error);
+    res.status(503).json({ error: agent.error });
+  } finally {
+    closingAgents.delete(agent.id);
+    broadcast(room);
+  }
 });
 app.post('/api/agents/:id/restart', async (req, res) => {
   const { room, session } = auth(req);

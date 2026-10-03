@@ -381,6 +381,45 @@ test(
       );
 
       // Starting a Claude session initializes the adapter but makes no provider query.
+      await request(`/api/agents/${agents[0].id}/close`, host.session, {}, 403);
+      await request(`/api/agents/${agents[0].id}/prompt`, peer.session, { prompt: 'ASK_TEAM' });
+      await until(
+        () => request('/api/room', peer.session),
+        (room: Room) =>
+          room.agents.find((agent) => agent.id === agents[0].id)?.status === 'waiting',
+      );
+      await request(`/api/agents/${agents[0].id}/close`, peer.session, {});
+      current = await request('/api/room', peer.session);
+      assert.equal(current.agents.length, 1);
+      assert.equal(current.agents[0].id, agents[1].id);
+      assert.equal(current.runners.find((item) => item.id === connected.id)?.status, 'online');
+      assert.ok(
+        current.decisions
+          .filter((decision) => decision.agentId === agents[0].id)
+          .every((decision) => !['open', 'owner-needed'].includes(decision.status)),
+      );
+      assert.deepEqual(current.overlaps, []);
+      assert.match(
+        await readFile(path.join(worktree(agents[0]), 'shared.ts'), 'utf8'),
+        /eventType/,
+      );
+      await stop(runner);
+      await until(
+        () => request('/api/room', peer.session),
+        (room: Room) => room.runners.find((item) => item.id === connected.id)?.status === 'offline',
+      );
+      runner = launch('runner/index.ts', ['--resume', stateFile]);
+      current = await until(
+        () => request('/api/room', peer.session),
+        (room: Room) =>
+          room.runners.find((item) => item.id === connected.id)?.status === 'online' &&
+          room.agents[0]?.status === 'idle',
+      );
+      assert.deepEqual(
+        current.agents.map((agent) => agent.id),
+        [agents[1].id],
+      );
+
       const claudePair = await request('/api/runners/pair', peer.session, { harness: 'claude' });
       const claude = launch(
         'runner/index.ts',
@@ -410,6 +449,17 @@ test(
       assert.equal(claudeAgent.harness, 'claude');
       assert.ok(!claude.output().includes('fixture-only-not-a-real-key'));
       await stop(claude);
+      await until(
+        () => request('/api/room', peer.session),
+        (room: Room) =>
+          room.agents.find((agent) => agent.id === claudeAgent.id)?.status === 'offline',
+      );
+      await request(`/api/agents/${claudeAgent.id}/close`, peer.session, {});
+      assert.equal((await request('/api/room', peer.session)).agents.length, 1);
+      assert.equal(
+        (await git(worktree(claudeAgent), 'branch', '--show-current')).trim(),
+        claudeAgent.branch,
+      );
 
       await request(`/api/runners/${connected.id}/revoke`, host.session, {}, 403);
       await request(`/api/runners/${connected.id}/revoke`, peer.session, {});

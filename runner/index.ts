@@ -321,6 +321,10 @@ export function connectRunner(state: RunnerState, repository: PreparedRepository
         throw error;
       }
     }
+    if (method === 'close') {
+      stopRuntime(agentId);
+      return {};
+    }
     const runtime = runtimes.get(agentId);
     if (!runtime?.client || !current(agentId, runtime))
       throw new Error(
@@ -361,10 +365,6 @@ export function connectRunner(state: RunnerState, repository: PreparedRepository
                 .toString('utf8') + '\n[Preview truncated]'
             : diff,
       };
-    }
-    if (method === 'close') {
-      stopRuntime(agentId);
-      return {};
     }
     throw new Error('Unsupported runner request.');
   }

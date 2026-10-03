@@ -1,5 +1,6 @@
 import type { Harness, Runner, RunnerProject } from './runner.js';
-export type AgentStatus = 'starting' | 'idle' | 'working' | 'waiting' | 'error' | 'offline';
+export type AgentStatus =
+  'starting' | 'idle' | 'working' | 'waiting' | 'error' | 'offline' | 'closing';
 export type Member = { id: string; name: string; color: number; online: boolean };
 export type Entry = {
   id: string;
@@ -78,6 +79,7 @@ export type HostConfig = {
   canHost: boolean;
   canManageProjects?: boolean;
   modelSelection?: boolean;
+  closeSessions?: boolean;
   projects?: HostProject[];
 };
 export type HostProject = {

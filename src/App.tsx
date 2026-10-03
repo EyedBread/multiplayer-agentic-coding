@@ -938,6 +938,11 @@ function Workspace({
   }
   const [modal, setModal] = useState<'invite' | 'agent' | 'decision' | 'runner' | null>(null);
   const [focus, setFocus] = useState<string | null>(null);
+  const [closingAgentId, setClosingAgentId] = useState<string | null>(null);
+  const closingAgent = room.agents.find((agent) => agent.id === closingAgentId);
+  useEffect(() => {
+    if (focus && !room.agents.some((agent) => agent.id === focus)) setFocus(null);
+  }, [focus, room.agents]);
   const [diff, setDiff] = useState<{
     file: string;
     agents: { name: string; content: string }[];
@@ -1016,6 +1021,15 @@ function Workspace({
       setModal(null);
       setName('');
       setTask('');
+    }
+    setBusy(false);
+  }
+  async function closeAgent() {
+    if (!closingAgent || busy) return;
+    setBusy(true);
+    if (await action(`/api/agents/${closingAgent.id}/close`)) {
+      setClosingAgentId(null);
+      notify('Session closed. Worktree files preserved.');
     }
     setBusy(false);
   }
@@ -1252,6 +1266,8 @@ function Workspace({
                         session={session}
                         enabled={enabled}
                         action={action}
+                        canClose={!!config?.closeSessions}
+                        onClose={() => setClosingAgentId(agent.id)}
                         onFocus={() => setFocus(focus === agent.id ? null : agent.id)}
                         onFile={(file) => void showDiff(file, [agent.id])}
                         onQuestion={() => {
@@ -1495,6 +1511,34 @@ function Workspace({
           <span className="statusbar-divider">/</span>ROOM {room.code}
         </span>
       </footer>
+      {closingAgent && (
+        <Modal
+          title={`Close ${closingAgent.name}?`}
+          close={() => {
+            if (!busy) setClosingAgentId(null);
+          }}
+        >
+          <p className="modal-description">
+            This ends the agent conversation, cancels its pending decisions, and removes its card
+            for everyone.
+            {room.mode === 'live' && ' Its Git branch and worktree files will be kept.'}
+          </p>
+          {room.mode === 'live' && (
+            <p className="form-note">
+              Branch: <code>{closingAgent.branch}</code>
+            </p>
+          )}
+          <div className="project-actions">
+            <Button onClick={() => setClosingAgentId(null)} disabled={busy}>
+              Keep session
+            </Button>
+            <Button kind="primary" onClick={() => void closeAgent()} disabled={busy || !enabled}>
+              {busy ? <Loader2 className="spin" size={15} /> : <X size={15} />}
+              {busy ? 'Closing…' : 'Close session'}
+            </Button>
+          </div>
+        </Modal>
+      )}
       {modal === 'invite' && (
         <Modal title="Invite teammates" eyebrow="INVITE YOUR TEAM" close={() => setModal(null)}>
           <p className="modal-description">
@@ -1998,6 +2042,8 @@ function AgentCard({
   onFocus,
   onFile,
   onQuestion,
+  canClose,
+  onClose,
 }: {
   agent: Agent;
   room: Room;
@@ -2007,6 +2053,8 @@ function AgentCard({
   onFocus: () => void;
   onFile: (file: string) => void;
   onQuestion: () => void;
+  canClose: boolean;
+  onClose: () => void;
 }) {
   const [prompt, setPrompt] = useState('');
   const [tab, setTab] = useState<'session' | 'files'>('session');
@@ -2074,6 +2122,17 @@ function AgentCard({
         >
           <ArrowUpRight size={17} />
         </button>
+        {canClose && canControl && (
+          <button
+            className="icon-button"
+            title="Close session"
+            aria-label={`Close ${agent.name} session`}
+            onClick={onClose}
+            disabled={!enabled || busy || ['starting', 'closing'].includes(agent.status)}
+          >
+            <X size={17} />
+          </button>
+        )}
       </header>
       <div className="agent-task">
         <span className={`agent-status ${agent.status}`}>
@@ -2086,6 +2145,7 @@ function AgentCard({
               starting: 'Connecting',
               error: 'Error',
               offline: 'Runner offline',
+              closing: 'Closing',
             }[agent.status]
           }
         </span>

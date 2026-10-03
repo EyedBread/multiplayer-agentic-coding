@@ -109,6 +109,10 @@ To check the decision UI with a real harness, ask: **“Give me a mock decision 
 
 ## Commands and configuration
 
+### Close a session
+
+Use the **×** in an agent card’s header, then **Close session**. Closing stops the harness conversation, cancels pending agent decisions, removes the card and its overlap warnings for everyone, and frees a session slot. Git branches and worktree files remain on the machine where the agent ran. Closed sessions do not restart when a local runner reconnects. Server sessions can be closed by their owner or the room host; local runner sessions can only be closed by their owner. **Stop** still interrupts just the current turn and keeps the session available.
+
 ### Choose a model
 
 In **Add agent**, choose where the agent runs, then use **Model** to select a model reported by that Codex or Claude harness. Each agent has its own model choice; lists come from the selected machine without submitting a prompt. **Harness default** preserves that machine’s configuration (`CODEX_MODEL` or `CLAUDE_MODEL` when set). **Custom model ID** accepts a model or provider alias supported by that harness when discovery is unavailable. The harness account determines actual access; a listed model does not guarantee quota or provider authorization.

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, chmod, rm } from 'node:fs/promises';
+import { mkdtemp, writeFile, readFile, chmod, rm } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { createServer } from 'node:net';
@@ -64,7 +64,7 @@ test(
       }
       throw new Error(`Parallel sessions did not reach expected state. Server output: ${output}`);
     }
-    async function request(route: string, session?: Session, body?: unknown) {
+    async function request(route: string, session?: Session, body?: unknown, status = 200) {
       const response = await fetch(`http://127.0.0.1:${port}${route}`, {
         method: body === undefined ? 'GET' : 'POST',
         headers: {
@@ -74,7 +74,7 @@ test(
         body: body === undefined ? undefined : JSON.stringify(body),
       });
       const result = await response.json();
-      assert.equal(response.status, 200, result.error);
+      assert.equal(response.status, status, result.error);
       return result;
     }
     try {
@@ -154,6 +154,28 @@ test(
         (room: Room) => room.agents.every((agent) => agent.status === 'idle'),
       );
       assert.equal((await git(dir, 'status', '--porcelain')).trim(), '');
+      const observer = await request('/api/join', undefined, {
+        code: host.room.code,
+        memberName: 'Observer',
+      });
+      await request(`/api/agents/${agents[0].id}/close`, observer.session, {}, 403);
+      await request(`/api/agents/${agents[1].id}/prompt`, returningSession, { prompt: 'ASK_TEAM' });
+      await until(
+        () => request('/api/room', returningSession),
+        (room: Room) =>
+          room.agents.find((agent) => agent.id === agents[1].id)?.status === 'waiting',
+      );
+      await request(`/api/agents/${agents[1].id}/close`, host.session, {});
+      await request(`/api/agents/${agents[0].id}/close`, returningSession, {});
+      const empty: Room = await request('/api/room', returningSession);
+      assert.equal(empty.agents.length, 0);
+      assert.deepEqual(empty.overlaps, []);
+      assert.ok(empty.decisions.every((decision) => decision.status === 'cancelled'));
+      for (const agent of agents) {
+        const cwd = path.join(dir, '.multiplayer', 'worktrees', host.room.id, agent.id);
+        assert.match(await readFile(path.join(cwd, 'shared.ts'), 'utf8'), /eventType/);
+        assert.equal((await git(cwd, 'branch', '--show-current')).trim(), agent.branch);
+      }
     } finally {
       server.kill('SIGTERM');
       await once(server, 'exit');

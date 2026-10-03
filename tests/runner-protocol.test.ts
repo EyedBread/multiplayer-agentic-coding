@@ -298,6 +298,29 @@ test(
           value.agents.find((agent) => agent.id === local.agent.id)?.status === 'offline',
       );
       assert.equal(room.agents.find((agent) => agent.id === other.agent.id)?.status, 'idle');
+      await request(`/api/agents/${other.agent.id}/close`, host.session.token, {});
+      other.socket.send(
+        JSON.stringify({
+          type: 'event',
+          agentId: other.agent.id,
+          event: { method: 'turn/started', params: { turn: { id: 'late-event' } } },
+        }),
+      );
+      const replacement = await request('/api/agents', host.session.token, {
+        name: 'Replacement',
+        task: 'Remain connected',
+        runnerId: other.bootstrap.runner.id,
+      });
+      assert.equal(replacement.status, 'idle');
+      room = await request('/api/room', host.session.token);
+      assert.equal(
+        room.agents.some((agent) => agent.id === other.agent.id),
+        false,
+      );
+      assert.equal(
+        room.runners.find((runner) => runner.id === other.bootstrap.runner.id)?.status,
+        'online',
+      );
     } finally {
       for (const socket of sockets) socket.terminate();
       if (server.exitCode === null) {
