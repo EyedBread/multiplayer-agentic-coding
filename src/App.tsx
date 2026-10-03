@@ -46,6 +46,7 @@ import { VOTE_DURATION_MS } from '../shared/types';
 import type { Harness, RunnerProject } from '../shared/runner';
 import { api, ApiError } from './api';
 import { createMembershipStore, normalizeRoomCode, type SavedMembership } from './membership';
+import { LandingPreview } from './LandingPreview';
 
 const memberships = createMembershipStore(
   {
@@ -496,41 +497,7 @@ function Lobby({
               <GitCompareArrows size={16} /> Shared awareness
             </span>
           </div>
-          <div className="little-room" aria-label="An illustration of three collaborating agents">
-            <div className="orbit-label">
-              <span className="dot" /> BETTER, TOGETHER
-            </div>
-            <div className="mini-agents">
-              {['You + Codex', 'Mina + Claude', 'Jules + Codex'].map((n, i) => (
-                <div className={`mini-agent ${colors[i]}`} key={n}>
-                  <div className="mini-agent-top">
-                    <span className="mini-agent-icon">
-                      <Command size={20} />
-                    </span>
-                    <span className="dot" />
-                  </div>
-                  <strong>{n}</strong>
-                  <span>
-                    {['Shaping the interface', 'Connecting the pieces', 'Checking the details'][i]}
-                  </span>
-                  <div className="mini-code">
-                    <i />
-                    <i />
-                    <i />
-                  </div>
-                </div>
-              ))}
-            </div>
-            <div className="mini-decision">
-              <Vote size={15} />
-              <span>One shared direction.</span>
-              <span className="mini-checks">
-                <Check size={13} />
-                <Check size={13} />
-                <Check size={13} />
-              </span>
-            </div>
-          </div>
+          <LandingPreview />
         </div>
         <div className="lobby-form-wrap">
           <div className="lobby-form">

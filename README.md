@@ -15,6 +15,8 @@ npm run dev
 
 Open **http://127.0.0.1:3000**. Choose **Explore a demo room** to try the complete collaboration flow without model access. Demo agents and file changes are explicitly simulated; room membership, presence, votes, and synchronization are real.
 
+The landing page also includes a self-contained interactive preview: follow Codex and Claude activity, try a vote and owner approval, and inspect files touched by both harnesses. Its activity is simulated, makes no model calls, and does not create a room. Pause or reset it at any time; motion starts paused when reduced motion is enabled.
+
 For live agents, sign in using the project’s pinned Codex CLI:
 
 ```sh
