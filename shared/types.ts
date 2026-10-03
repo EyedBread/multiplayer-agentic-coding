@@ -19,6 +19,7 @@ export type Agent = {
   entries: Entry[];
   contextVersion: number;
   harness?: Harness;
+  model?: string;
   runnerId?: string;
   error?: string;
 };
@@ -76,6 +77,7 @@ export type HostConfig = {
   codexAvailable: boolean;
   canHost: boolean;
   canManageProjects?: boolean;
+  modelSelection?: boolean;
   projects?: HostProject[];
 };
 export type HostProject = {

@@ -41,6 +41,7 @@ import {
   Zap,
 } from 'lucide-react';
 import type { Agent, Decision, HostConfig, Room, Session } from '../shared/types';
+import type { HarnessModel } from '../shared/models';
 import { VOTE_DURATION_MS } from '../shared/types';
 import type { Harness, RunnerProject } from '../shared/runner';
 import { api, ApiError } from './api';
@@ -801,6 +802,93 @@ function Lobby({
   );
 }
 
+function ModelPicker({
+  session,
+  runnerId,
+  value,
+  onChange,
+  disabled,
+}: {
+  session: Session;
+  runnerId: string;
+  value: string;
+  onChange: (model: string) => void;
+  disabled: boolean;
+}) {
+  const [models, setModels] = useState<HarnessModel[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [failed, setFailed] = useState(false);
+  const [custom, setCustom] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    if (disabled) {
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    setFailed(false);
+    void api<{ models: HarnessModel[] }>('/api/models', session, {
+      runnerId: runnerId || undefined,
+    })
+      .then((result) => {
+        if (!cancelled) setModels(result.models);
+      })
+      .catch(() => {
+        if (!cancelled) setFailed(true);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [session.token, runnerId, disabled]);
+  return (
+    <>
+      <label>
+        Model
+        <select
+          value={custom ? '__custom' : value}
+          disabled={disabled}
+          onChange={(event) => {
+            const next = event.target.value;
+            setCustom(next === '__custom');
+            onChange(next === '__custom' ? '' : next);
+          }}
+        >
+          <option value="">Harness default</option>
+          {models.map((model) => (
+            <option key={model.id} value={model.id}>
+              {model.name} · {model.id}
+            </option>
+          ))}
+          <option value="__custom">Custom model ID…</option>
+        </select>
+        <span className="field-help">
+          {loading
+            ? 'Loading models from this harness…'
+            : failed
+              ? 'Couldn’t load models. Use the harness default or enter a model ID.'
+              : 'Choose a model for this agent. Availability depends on its harness account.'}
+        </span>
+      </label>
+      {custom && (
+        <label>
+          Model ID
+          <input
+            value={value}
+            onChange={(event) => onChange(event.target.value)}
+            required
+            maxLength={160}
+            placeholder="Model ID supported by this harness"
+            disabled={disabled}
+          />
+        </label>
+      )}
+    </>
+  );
+}
+
 type Action = (url: string, data?: unknown) => Promise<boolean>;
 function Workspace({
   room,
@@ -858,6 +946,7 @@ function Workspace({
   const [name, setName] = useState('');
   const [task, setTask] = useState('');
   const [selectedRunner, setSelectedRunner] = useState('');
+  const [selectedModel, setSelectedModel] = useState('');
   const [question, setQuestion] = useState('');
   const [choices, setChoices] = useState(['', '']);
   const [busy, setBusy] = useState(false);
@@ -877,6 +966,7 @@ function Workspace({
     room.mode === 'demo' ||
     (selectedRunner ? chosenRunner?.status === 'online' : config?.codexAvailable !== false);
   function openAgent() {
+    setSelectedModel('');
     setSelectedRunner(myRunners.find((runner) => runner.status === 'online')?.id ?? '');
     setModal('agent');
   }
@@ -920,6 +1010,7 @@ function Workspace({
         name,
         task,
         ...(selectedRunner ? { runnerId: selectedRunner } : {}),
+        ...(room.mode === 'live' && selectedModel ? { model: selectedModel } : {}),
       })
     ) {
       setModal(null);
@@ -1471,7 +1562,10 @@ function Workspace({
                 Run this agent on
                 <select
                   value={selectedRunner}
-                  onChange={(e) => setSelectedRunner(e.target.value)}
+                  onChange={(e) => {
+                    setSelectedRunner(e.target.value);
+                    setSelectedModel('');
+                  }}
                   disabled={busy}
                 >
                   <option value="" disabled={config?.codexAvailable === false}>
@@ -1496,6 +1590,16 @@ function Workspace({
                   </button>
                 )}
               </label>
+            )}
+            {room.mode === 'live' && config?.modelSelection && (
+              <ModelPicker
+                key={selectedRunner}
+                session={session}
+                runnerId={selectedRunner}
+                value={selectedModel}
+                onChange={setSelectedModel}
+                disabled={busy || !executionAvailable}
+              />
             )}
             <label>
               Agent name
@@ -1958,6 +2062,9 @@ function AgentCard({
             )}
             {agent.branch}
           </p>
+          {room.mode === 'live' && (
+            <p title="Selected model">Model: {agent.model || 'Harness default'}</p>
+          )}
         </div>
         <button
           className="icon-button"

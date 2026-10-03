@@ -40,7 +40,7 @@ class FakeQuery implements AsyncIterable<SDKMessage> {
     };
   }
 }
-function fixture() {
+function fixture(model?: string) {
   const events: HarnessEvent[] = [];
   const queries: FakeQuery[] = [];
   const inputs: { prompt: string; options: Options }[] = [];
@@ -51,7 +51,7 @@ function fixture() {
     (event) => events.push(event),
     (error) => exits.push(error),
     {
-      env: { ANTHROPIC_API_KEY: 'test-key-local-only' },
+      env: { ANTHROPIC_API_KEY: 'test-key-local-only', CLAUDE_MODEL: 'fixture-default' },
       query: (input) => {
         inputs.push(input);
         const query = new FakeQuery();
@@ -63,6 +63,7 @@ function fixture() {
         return createSdkMcpServer(options);
       },
     },
+    model,
   );
   return { client, events, queries, inputs, tools, exits };
 }
@@ -84,6 +85,7 @@ test('Claude keeps credentials local, resumes the exact session, and shares only
   const firstId = await f.client.prompt('Implement the feature');
   assert.equal(f.client.turnId, firstId);
   assert.equal(f.inputs[0].options.cwd, '/local/isolated-worktree');
+  assert.equal(f.inputs[0].options.model, 'fixture-default');
   assert.equal(f.inputs[0].options.permissionMode, 'default');
   assert.deepEqual(f.inputs[0].options.allowedTools, ['mcp__multiplayer__team_decision']);
   assert.deepEqual(f.inputs[0].options.settingSources, []);
@@ -155,6 +157,23 @@ test('Claude keeps credentials local, resumes the exact session, and shares only
   assert.equal(f.inputs[1].options.sessionId, undefined);
   f.client.close();
   await setImmediate();
+});
+
+test('Claude keeps the per-agent model on subsequent prompts instead of the runner default', async () => {
+  const f = fixture('fixture-selected');
+  try {
+    await f.client.init();
+    await f.client.prompt('First task');
+    assert.equal(f.inputs[0].options.model, 'fixture-selected');
+    f.queries[0].push(success);
+    f.queries[0].close();
+    await setImmediate();
+    await f.client.prompt('Continue');
+    assert.equal(f.inputs[1].options.model, 'fixture-selected');
+    assert.equal(f.inputs[1].options.resume, 'local-session');
+  } finally {
+    f.client.close();
+  }
 });
 
 test('Claude approvals wait for an explicit owner reply and do not install persistent grants', async () => {

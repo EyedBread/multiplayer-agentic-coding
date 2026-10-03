@@ -10,6 +10,7 @@ export type Runner = {
   name: string;
   harness: Harness;
   status: 'connecting' | 'online' | 'offline';
+  modelSelection?: boolean;
 };
 // Both adapters publish this small public event vocabulary. No provider credentials cross it.
 export type HarnessEvent = {
@@ -38,12 +39,19 @@ export type RunnerBootstrap = {
 export type RunnerRequest = {
   type: 'request';
   id: string;
-  method: 'start' | 'prompt' | 'steer' | 'interrupt' | 'reply' | 'reject' | 'diff' | 'close';
+  method:
+    'models' | 'start' | 'prompt' | 'steer' | 'interrupt' | 'reply' | 'reject' | 'diff' | 'close';
   agentId: string;
   params: any;
 };
 export type RunnerMessage =
-  | { type: 'ready'; protocol: 1; baseCommit: string; identity: string | null }
+  | {
+      type: 'ready';
+      protocol: 1;
+      baseCommit: string;
+      identity: string | null;
+      capabilities?: { modelSelection: boolean };
+    }
   | { type: 'result'; id: string; result?: any; error?: string }
   | { type: 'event'; agentId: string; event: HarnessEvent }
   | { type: 'files'; agentId: string; files: string[] }

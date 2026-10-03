@@ -178,15 +178,38 @@ test(
         400,
       );
       const agents: Agent[] = [];
+      await request('/api/models', host.session, { runnerId: connected.id }, 403);
+      const catalog = await request('/api/models', peer.session, { runnerId: connected.id });
+      assert.deepEqual(
+        catalog.models.map((model: { id: string }) => model.id),
+        ['fixture-fast', 'fixture-deep'],
+      );
       for (const name of ['Interface', 'Server']) {
+        const model = name === 'Interface' ? 'fixture-fast' : 'fixture-deep';
         const agent: Agent = await request('/api/agents', peer.session, {
           name,
           task: `Build ${name}`,
           runnerId: connected.id,
+          model,
         });
         assert.equal(agent.status, 'idle', agent.error);
         assert.equal(agent.runnerId, connected.id);
         assert.equal(agent.ownerId, peer.session.memberId);
+        assert.equal(agent.model, model);
+        assert.equal(
+          await readFile(
+            path.join(
+              localRepo,
+              '.multiplayer',
+              'worktrees',
+              host.room.id,
+              agent.id,
+              'selected-model.txt',
+            ),
+            'utf8',
+          ),
+          model,
+        );
         agents.push(agent);
       }
       const worktree = (agent: Agent) =>
@@ -278,6 +301,7 @@ test(
         'cancelled',
       );
       const memberCount = current.members.length;
+      for (const agent of agents) await rm(path.join(worktree(agent), 'selected-model.txt'));
       for (const agent of agents)
         await writeFile(
           path.join(worktree(agent), 'shared.ts'),
@@ -302,6 +326,13 @@ test(
       );
       assert.match(runner.output(), /Local turns stopped; worktrees kept/);
       assert.equal(runner.process.exitCode, null);
+      for (const agent of agents) {
+        assert.equal(current.agents.find((item) => item.id === agent.id)?.model, agent.model);
+        assert.equal(
+          await readFile(path.join(worktree(agent), 'selected-model.txt'), 'utf8'),
+          agent.model,
+        );
+      }
       for (const agent of agents)
         assert.equal(
           await readFile(path.join(worktree(agent), 'shared.ts'), 'utf8'),

@@ -109,6 +109,14 @@ To check the decision UI with a real harness, ask: **“Give me a mock decision 
 
 ## Commands and configuration
 
+### Choose a model
+
+In **Add agent**, choose where the agent runs, then use **Model** to select a model reported by that Codex or Claude harness. Each agent has its own model choice; lists come from the selected machine without submitting a prompt. **Harness default** preserves that machine’s configuration (`CODEX_MODEL` or `CLAUDE_MODEL` when set). **Custom model ID** accepts a model or provider alias supported by that harness when discovery is unavailable. The harness account determines actual access; a listed model does not guarantee quota or provider authorization.
+
+The agent card shows the selected model. The choice stays with that agent across local runner reconnects and subsequent prompts. To use a different model, create another agent; switching an existing conversation’s model is not implemented. After updating the app, relaunch existing local runners to enable model selection.
+
+### Commands
+
 | Command                    | Purpose                                                   |
 | -------------------------- | --------------------------------------------------------- |
 | `npm run dev`              | Combined Node host and Vite development server            |

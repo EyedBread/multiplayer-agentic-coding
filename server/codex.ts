@@ -3,6 +3,7 @@ import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
 import type { HarnessClient, HarnessEvent } from '../shared/runner.js';
+import { modelChoices, modelDiscovery, modelSelection } from '../shared/models.js';
 import {
   decisionAwarePrompt,
   decisionPresentationInstructions,
@@ -58,6 +59,7 @@ export class CodexClient implements HarnessClient {
     readonly onEvent: (message: Rpc) => void,
     readonly onExit: (message: string) => void,
     binary = CODEX_BINARY,
+    readonly model?: string,
   ) {
     const invocation = codexInvocation(['app-server', '--listen', 'stdio://'], binary);
     this.process = spawn(invocation.command, invocation.args, {
@@ -130,14 +132,18 @@ export class CodexClient implements HarnessClient {
       }
     });
   }
-  async init() {
+  async initialize() {
     await this.call('initialize', {
       clientInfo: { name: 'multiplayer_agentic_coding', title: 'Multiplayer', version: '0.1.0' },
       capabilities: { experimentalApi: true },
     });
     this.send({ method: 'initialized', params: {} });
+  }
+  async init() {
+    await this.initialize();
+    const model = modelSelection(this.model) || process.env.CODEX_MODEL;
     const result = await this.call('thread/start', {
-      ...(process.env.CODEX_MODEL ? { model: process.env.CODEX_MODEL } : {}),
+      ...(model ? { model } : {}),
       cwd: this.cwd,
       approvalPolicy: 'on-request',
       approvalsReviewer: 'user',
@@ -187,4 +193,35 @@ export class CodexClient implements HarnessClient {
     this.pending.clear();
     this.process.kill('SIGTERM');
   }
+}
+
+export async function codexModels(cwd: string, binary = CODEX_BINARY) {
+  const client = new CodexClient(
+    cwd,
+    () => {},
+    () => {},
+    binary,
+  );
+  return modelDiscovery(
+    async () => {
+      await client.initialize();
+      const rows: unknown[] = [];
+      let cursor: string | undefined;
+      let pages = 0;
+      do {
+        ++pages;
+        const result = await client.call('model/list', {
+          limit: 100,
+          ...(cursor ? { cursor } : {}),
+        });
+        if (!Array.isArray(result.data)) throw new Error('Codex did not return a model list.');
+        rows.push(
+          ...result.data.map((model: any) => ({ id: model.model, name: model.displayName })),
+        );
+        cursor = typeof result.nextCursor === 'string' ? result.nextCursor : undefined;
+      } while (cursor && rows.length < 200 && pages < 10);
+      return modelChoices(rows);
+    },
+    () => client.close(),
+  );
 }

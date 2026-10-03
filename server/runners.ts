@@ -190,6 +190,7 @@ export class RunnerRegistry {
               throw fail('The runner is connected to a different repository or commit.');
             clearTimeout(readyTimeout);
             connection.ready = true;
+            credential.runner.modelSelection = message.capabilities?.modelSelection === true;
             credential.runner.status = 'online';
             this.hooks.ready(credential.room, credential.runner);
           } else if (message.type === 'result' && typeof message.id === 'string') {
@@ -311,6 +312,7 @@ export class RemoteHarnessClient implements HarnessClient {
         name: this.agent.name,
         task: this.agent.task,
         branch: this.agent.branch,
+        model: this.agent.model,
       },
       project: this.room.project,
     });

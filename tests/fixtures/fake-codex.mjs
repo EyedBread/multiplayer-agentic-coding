@@ -9,7 +9,19 @@ const requests = new Map();
 createInterface({ input: process.stdin }).on('line', (line) => {
   const message = JSON.parse(line);
   if (message.method === 'initialize') send({ id: message.id, result: { userAgent: 'fixture' } });
+  if (message.method === 'model/list')
+    send({
+      id: message.id,
+      result: {
+        data: [
+          { model: 'fixture-fast', displayName: 'Fixture Fast' },
+          { model: 'fixture-deep', displayName: 'Fixture Deep' },
+        ],
+        nextCursor: null,
+      },
+    });
   if (message.method === 'thread/start') {
+    if (message.params.model) writeFileSync('selected-model.txt', message.params.model);
     if (message.params.dynamicTools[0].type !== 'function')
       throw new Error('Wrong dynamic tool schema');
     send({ id: message.id, result: { thread: { id: 'thread-test' } } });

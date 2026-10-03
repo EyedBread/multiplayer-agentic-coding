@@ -2,7 +2,8 @@ import { hostname } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
-import { CodexClient } from '../server/codex.js';
+import { CodexClient, codexModels } from '../server/codex.js';
+import { modelSelection } from '../shared/models.js';
 import { changedFiles, fileDiff } from '../server/git.js';
 import type {
   HarnessClient,
@@ -220,6 +221,13 @@ export function connectRunner(state: RunnerState, repository: PreparedRepository
     if (closed || expectedGeneration !== generation)
       throw new Error('Runner connection changed. Send a new request after reconnecting.');
     const { agentId, method, params } = message;
+    if (method === 'models') {
+      const models =
+        state.runner.harness === 'claude'
+          ? await (await import('./claude.js')).claudeModels(repository.root)
+          : await codexModels(repository.root);
+      return { models };
+    }
     if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/.test(agentId))
       throw new Error('Invalid agent identifier.');
     if (method === 'start') {
@@ -231,6 +239,7 @@ export function connectRunner(state: RunnerState, repository: PreparedRepository
         params.project.identity !== state.project.identity
       )
         throw new Error('The agent does not belong to this runner’s owner or pinned project.');
+      const model = modelSelection(params.agent.model);
       const workspace = await prepareAgentWorktree(repository, state.roomId, params.agent);
       if (closed || expectedGeneration !== generation)
         throw new Error('Disconnected before the agent started. Its worktree was preserved.');
@@ -298,8 +307,8 @@ export function connectRunner(state: RunnerState, repository: PreparedRepository
           const { ClaudeClient } = await import('./claude.js');
           if (!current(agentId, runtime))
             throw new Error('Runner disconnected while loading the harness.');
-          runtime.client = new ClaudeClient(workspace.cwd, onEvent, onExit);
-        } else runtime.client = new CodexClient(workspace.cwd, onEvent, onExit);
+          runtime.client = new ClaudeClient(workspace.cwd, onEvent, onExit, {}, model);
+        } else runtime.client = new CodexClient(workspace.cwd, onEvent, onExit, undefined, model);
         const threadId = await runtime.client.init();
         if (!current(agentId, runtime)) {
           runtime.client.close();
@@ -422,6 +431,7 @@ export function connectRunner(state: RunnerState, repository: PreparedRepository
         {
           type: 'ready',
           protocol: 1,
+          capabilities: { modelSelection: true },
           baseCommit: repository.baseCommit,
           identity: repository.identity,
         },

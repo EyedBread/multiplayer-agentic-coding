@@ -6,9 +6,11 @@ import {
   type CanUseTool,
   type Options,
   type SDKMessage,
+  type SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import type { HarnessClient, HarnessEvent } from '../shared/runner.js';
+import { modelChoices, modelDiscovery, modelSelection } from '../shared/models.js';
 import {
   decisionAwarePrompt,
   decisionPresentationInstructions,
@@ -81,6 +83,7 @@ export class ClaudeClient implements HarnessClient {
     readonly onEvent: (event: HarnessEvent) => void,
     readonly onExit: (message: string) => void,
     dependencies: Dependencies = {},
+    readonly model?: string,
   ) {
     this.makeQuery = dependencies.query ?? query;
     this.makeServer = dependencies.createServer ?? createSdkMcpServer;
@@ -156,7 +159,9 @@ export class ClaudeClient implements HarnessClient {
           cwd: this.cwd,
           abortController: controller,
           ...(this.sessionStarted ? { resume: this.threadId } : { sessionId: this.threadId }),
-          ...(this.env.CLAUDE_MODEL ? { model: this.env.CLAUDE_MODEL } : {}),
+          ...(this.model || this.env.CLAUDE_MODEL
+            ? { model: modelSelection(this.model) || this.env.CLAUDE_MODEL }
+            : {}),
           permissionMode: 'default',
           canUseTool: this.canUseTool,
           // Repo/user settings can contain hooks and broad permission grants. Start
@@ -445,4 +450,42 @@ export class ClaudeClient implements HarnessClient {
       }
     }
   }
+}
+
+export async function claudeModels(cwd: string) {
+  // Keep the input stream open without submitting a prompt or requesting a model turn.
+  let release!: () => void;
+  const waiting = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  async function* input(): AsyncGenerator<SDKUserMessage> {
+    await waiting;
+  }
+  const controller = new AbortController();
+  const session = query({
+    prompt: input(),
+    options: {
+      cwd,
+      abortController: controller,
+      settingSources: [],
+      persistSession: false,
+      tools: [],
+      mcpServers: {},
+      canUseTool: async () => ({ behavior: 'deny', message: 'Model discovery only.' }),
+    },
+  });
+  return modelDiscovery(
+    async () =>
+      modelChoices(
+        (await session.supportedModels()).map((model) => ({
+          id: model.value,
+          name: model.displayName,
+        })),
+      ),
+    () => {
+      release();
+      controller.abort();
+      session.close();
+    },
+  );
 }

@@ -120,6 +120,14 @@ test(
       assert.equal(b.room.repoName, 'second');
       assert.notEqual(a.room.project.baseCommit, b.room.project.baseCommit);
       const pinned = b.room.project.baseCommit;
+      const catalog = await request('/api/models', {}, b.session);
+      assert.equal(catalog.models[0].id, 'fixture-fast');
+      await request(
+        '/api/agents',
+        { name: 'Invalid', task: 'No side effects', model: {} },
+        b.session,
+        400,
+      );
       await writeFile(path.join(second, 'README.md'), 'newer commit');
       await git(second, 'add', '.');
       await git(
@@ -139,13 +147,14 @@ test(
       );
       const agentB = await request(
         '/api/agents',
-        { name: 'Second agent', task: 'Check repository' },
+        { name: 'Second agent', task: 'Check repository', model: 'fixture-deep' },
         b.session,
       );
       assert.equal(agentA.status, 'idle', agentA.error);
       assert.equal(agentB.status, 'idle', agentB.error);
       const cwdA = path.join(first, '.multiplayer/worktrees', a.room.id, agentA.id);
       const cwdB = path.join(state, 'worktrees', b.room.id, agentB.id);
+      assert.equal(await readFile(path.join(cwdB, 'selected-model.txt'), 'utf8'), 'fixture-deep');
       assert.equal(await readFile(path.join(cwdA, 'README.md'), 'utf8'), 'first');
       assert.equal(await readFile(path.join(cwdB, 'README.md'), 'utf8'), 'second');
       assert.equal((await git(cwdB, 'rev-parse', 'HEAD')).trim(), pinned);

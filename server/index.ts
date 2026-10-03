@@ -24,7 +24,8 @@ import {
   uid,
 } from './room.js';
 import { changedFiles, createWorktree, fileDiff, repoInfo, git } from './git.js';
-import { codexInvocation, CodexClient } from './codex.js';
+import { codexInvocation, CodexClient, codexModels } from './codex.js';
+import { modelChoices, modelSelection, type HarnessModel } from '../shared/models.js';
 import { RemoteHarnessClient, RunnerRegistry } from './runners.js';
 import { demoDiff, runDemoScenario, seedDemo } from './demo.js';
 import { ProjectRegistry } from './projects.js';
@@ -482,6 +483,7 @@ app.get('/api/config', async (req, res) => {
     codexAvailable,
     canHost: true,
     canManageProjects: local(req.socket.remoteAddress),
+    modelSelection: true,
     projects: await projects.list(local(req.socket.remoteAddress)),
   });
 });
@@ -561,6 +563,42 @@ app.post('/api/join', (req, res) => {
   res.json({ room, session: newSession(room, member.id) });
 });
 app.get('/api/room', (req, res) => res.json(auth(req).room));
+const modelCatalogs = new Map<string, { expires: number; value: Promise<HarnessModel[]> }>();
+app.post('/api/models', async (req, res) => {
+  const { room, session } = auth(req);
+  if (room.mode !== 'live') throw new Error('Models are available in live rooms.');
+  const runnerId = req.body.runnerId;
+  const runner = runnerId
+    ? room.runners.find((r) => r.id === runnerId && r.ownerId === session.memberId)
+    : undefined;
+  if (runnerId && (!runner || runner.status !== 'online'))
+    return res.status(403).json({ error: 'Select an online runner that belongs to you.' });
+  if (runner && !runner.modelSelection)
+    return res
+      .status(503)
+      .json({ error: 'Update and restart this runner to enable model selection.' });
+  const key = runner ? runner.id : `host:${room.projectId ?? 'default'}`;
+  for (const [id, cached] of modelCatalogs)
+    if (cached.expires <= Date.now()) modelCatalogs.delete(id);
+  let cached = modelCatalogs.get(key);
+  if (!cached) {
+    const value = runner
+      ? runnerRegistry
+          .call(runner.id, 'models', 'models')
+          .then((result) => modelChoices(result?.models))
+      : codexModels(projects.resolve(room.projectId ?? 'default'));
+    cached = { expires: Date.now() + 30000, value };
+    modelCatalogs.set(key, cached);
+  }
+  try {
+    res.json({ models: await cached.value });
+  } catch {
+    modelCatalogs.delete(key);
+    res.status(503).json({
+      error: 'Could not load models from this harness. Use its default or enter a model ID.',
+    });
+  }
+});
 app.post('/api/agents', async (req, res) => {
   const { room, session } = auth(req);
   if (room.agents.length >= 6) throw new Error('A room can have up to six agents.');
@@ -570,6 +608,9 @@ app.post('/api/agents', async (req, res) => {
     : undefined;
   if (runnerId && (!runner || runner.status !== 'online'))
     throw new Error('Select an online runner that belongs to you.');
+  const model = modelSelection(req.body.model);
+  if (runner && model && !runner.modelSelection)
+    throw new Error('Update and restart this runner to enable model selection.');
   const agent = makeAgent(
     room,
     session.memberId,
@@ -577,6 +618,7 @@ app.post('/api/agents', async (req, res) => {
     text(req.body.task, 'Task', 300),
   );
   agent.harness = runner?.harness ?? 'codex';
+  if (room.mode === 'live') agent.model = model;
   agent.runnerId = runner?.id;
   if (runner) {
     await connectRemoteAgent(room, agent);
@@ -609,6 +651,8 @@ app.post('/api/agents', async (req, res) => {
           cancelRequests(room, agent);
           broadcast(room);
         },
+        undefined,
+        agent.model,
       );
       await runtime.client.init();
     }
