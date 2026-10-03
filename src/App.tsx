@@ -915,11 +915,6 @@ function Workspace({
                 {room.name}
                 <span className="heading-star">✳</span>
               </h1>
-              <p>
-                {room.mode === 'demo'
-                  ? 'A few agents, a shared goal, and everyone in the loop.'
-                  : 'Your agents are working together. You’ve got the whole picture.'}
-              </p>
             </div>
             <div className="heading-actions">
               <button
@@ -1077,12 +1072,7 @@ function Workspace({
                           <span className="dashed-orbit" />
                           <Plus size={24} />
                         </span>
-                        <strong>Room for another mind.</strong>
-                        <span>
-                          Give an agent a task.
-                          <br />
-                          Keep the whole team in the loop.
-                        </span>
+                        <span>Give an agent a task.</span>
                         <span className="add-agent-link">
                           Add an agent <ArrowUpRight size={15} />
                         </span>
@@ -1096,7 +1086,6 @@ function Workspace({
                         ? 'Demo agents are simulated. No project files are changed.'
                         : 'Each agent works in its own Git worktree.'}
                     </span>
-                    <span>FOCUS TO BUILD. ZOOM OUT TO CONNECT.</span>
                   </div>
                 </>
               )}
@@ -1213,7 +1202,6 @@ function Workspace({
               {rail === 'decisions' ? (
                 <>
                   <div className="rail-intro">
-                    <span>Better calls, together.</span>
                     <button
                       className="icon-button"
                       aria-label="Start a team vote"
@@ -1231,10 +1219,7 @@ function Workspace({
                           <Check size={14} />
                         </span>
                       </div>
-                      <h3>On the same page.</h3>
-                      <p>
-                        No decisions waiting. When something needs a team call, it lands right here.
-                      </p>
+                      <h3>No pending decisions</h3>
                       <Button onClick={() => setModal('decision')} disabled={!enabled}>
                         <Plus size={15} />
                         Start a team vote
@@ -1268,16 +1253,6 @@ function Workspace({
                       ))}
                     </div>
                   )}
-                  <div className="vote-explainer">
-                    <Clock3 size={16} />
-                    <div>
-                      <strong>Small pause. Shared progress.</strong>
-                      <p>
-                        Vote and discuss for 60 seconds. Then the decision owner approves the final
-                        answer. Other agents keep moving.
-                      </p>
-                    </div>
-                  </div>
                 </>
               ) : (
                 <div className="activity-list">
@@ -1310,7 +1285,7 @@ function Workspace({
                 ))}
                 <button className="invite-text" onClick={() => setModal('invite')}>
                   <Plus size={14} />
-                  There’s room for your team
+                  Invite teammates
                 </button>
               </div>
             </aside>
@@ -1325,18 +1300,10 @@ function Workspace({
         <span>
           {room.mode === 'demo' ? 'SIMULATED AGENTS' : 'MULTIPLAYER SERVER'}
           <span className="statusbar-divider">/</span>ROOM {room.code}
-          <span className="statusbar-divider">/</span>
-          <span>
-            BUILT TOGETHER <span className="lime-text">✳</span>
-          </span>
         </span>
       </footer>
       {modal === 'invite' && (
-        <Modal
-          title="Good company, one link away."
-          eyebrow="INVITE YOUR TEAM"
-          close={() => setModal(null)}
-        >
+        <Modal title="Invite teammates" eyebrow="INVITE YOUR TEAM" close={() => setModal(null)}>
           <p className="modal-description">
             Anyone with this invite can join the room, see agent sessions, and vote on team
             decisions.
