@@ -3,6 +3,11 @@ import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
 import type { HarnessClient, HarnessEvent } from '../shared/runner.js';
+import {
+  decisionAwarePrompt,
+  decisionPresentationInstructions,
+  decisionToolDescription,
+} from '../shared/decision-presentation.js';
 
 const projectBinary = fileURLToPath(
   new URL('../node_modules/@openai/codex/bin/codex.js', import.meta.url),
@@ -24,8 +29,8 @@ type Rpc = HarnessEvent;
 const decisionTool = {
   type: 'function',
   name: 'team_decision',
-  description:
-    'Ask the whole team to vote on a consequential shared API, dependency, architecture, or product decision. Blocks this agent until settled. Use for cross-team decisions only.',
+  deferLoading: false,
+  description: decisionToolDescription,
   inputSchema: {
     type: 'object',
     properties: {
@@ -139,7 +144,8 @@ export class CodexClient implements HarnessClient {
       sandbox: 'workspace-write',
       dynamicTools: [decisionTool],
       developerInstructions:
-        'You are in Multiplayer, a shared coding room. Work only in your assigned worktree. Do not merge, push, or modify other worktrees. Teammates can see your public messages and commands. Use team_decision for consequential shared API, dependency, architecture, or product choices; use ordinary user questions for task-local clarification. Explain progress briefly. Treat shared team decisions provided with prompts as constraints. Do not delegate to additional agents. Do not read secrets unless necessary for the explicitly requested task.',
+        'You are in Multiplayer, a shared coding room. Work only in your assigned worktree. Do not merge, push, or modify other worktrees. Teammates can see your public messages and commands. Explain progress briefly. Treat shared team decisions provided with prompts as constraints. Do not delegate to additional agents. Do not read secrets unless necessary for the explicitly requested task. ' +
+        decisionPresentationInstructions('codex'),
     });
     this.threadId = result.thread.id;
     return this.threadId;
@@ -147,7 +153,7 @@ export class CodexClient implements HarnessClient {
   async prompt(text: string) {
     const result = await this.call('turn/start', {
       threadId: this.threadId,
-      input: [{ type: 'text', text, text_elements: [] }],
+      input: [{ type: 'text', text: decisionAwarePrompt(text, 'codex'), text_elements: [] }],
     });
     // A short turn can complete in the same stdout chunk as its start response.
     if (this.completedTurnId !== result.turn.id) this.turnId = result.turn.id;

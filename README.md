@@ -92,7 +92,7 @@ You can also create your own votes, add agents, send simulated prompts, and insp
 
 - Create a live room and add an agent with a name, task, and execution location. This creates its own worktree and Codex or Claude conversation.
 - Send a prompt to start work. Everyone can see public agent messages, commands, status, and changed files. Only the owner controls a local agent. Host agents retain owner and room-host controls.
-- Agents have a `team_decision` tool for shared API, dependency, architecture, and product choices. Ordinary structured agent questions go to their owner; any teammate can promote a question with multiple choices to a team vote.
+- Agents have a `team_decision` tool for shared API, dependency, architecture, and product choices. Explicit requests for interactive choices, A/B/C selectors, and mock decisions also use this tool. The harness receives that UI contract at startup and on every prompt. Ordinary structured agent questions go to their owner; any teammate can promote a question with multiple choices to a team vote.
 - Team votes last **60 seconds**. Each eligible member gets one changeable ballot. The tally informs the decision; it never automatically resumes the agent. Once voting closes, the decision owner selects and explicitly approves the final answer, even when there is a clear winner. The owner is the asking agent’s owner, or the initiator of a manually created vote. The room host cannot override another owner’s decision. Teammates joining after a vote opens participate starting with the next vote.
 - Each team vote has its own real-time discussion. All room members, including people who joined after voting opened, can send messages while voting or owner approval is pending. Each discussion keeps its latest 100 messages, with up to 1,000 characters per message. Settled or cancelled discussions are read-only and remain available in the decision history while the server is running.
 - Only the asking agent waits. Approved answers return to its blocked tool. Running Codex agents receive shared decisions through `turn/steer`. Claude receives the shared decision history with its next prompt; the UI leaves its context marked as queued until then. Both harnesses receive the full approved history on subsequent prompts. Delivery is not a guarantee that the implementation follows the decision.
@@ -100,6 +100,8 @@ You can also create your own votes, add agents, send simulated prompts, and insp
 - File tracking compares each worktree against its starting commit every two seconds, including staged, unstaged, committed, deleted, and untracked files. Changes to the same path trigger a **potential overlap**, not a claim of a semantic or merge conflict.
 
 When ready, review and integrate the agents’ branches using Git. Worktrees remain available after the host stops.
+
+To check the decision UI with a real harness, ask: **“Give me a mock decision making A B or C for me to Pick and select.”** A card should appear under **Team decisions**, and the agent should show **Needs input**. Select an option, wait for the 60-second vote to end, select the final answer, and click **Approve & resume agent**. The agent then receives that answer. A plain list in the transcript, an HTML picker file, or a `visualize` directive does not create a room decision. This manual check uses the harness’s model account; the automated tests use fixtures.
 
 ## Commands and configuration
 

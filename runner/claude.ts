@@ -9,6 +9,11 @@ import {
 } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import type { HarnessClient, HarnessEvent } from '../shared/runner.js';
+import {
+  decisionAwarePrompt,
+  decisionPresentationInstructions,
+  decisionToolDescription,
+} from '../shared/decision-presentation.js';
 
 type ClaudeQuery = AsyncIterable<SDKMessage> & { close(): void };
 export type ClaudeQueryFactory = (input: { prompt: string; options: Options }) => ClaudeQuery;
@@ -54,10 +59,9 @@ const instructions =
   'You are in Multiplayer, a shared coding room. Work only in your assigned worktree. ' +
   'Do not merge, push, modify other worktrees, or delegate to additional agents. ' +
   'Teammates see your public messages and commands. Never put credentials or private reasoning in them. ' +
-  'Use mcp__multiplayer__team_decision for consequential shared API, dependency, architecture, ' +
-  'or product decisions. This tool waits for a team vote and the session owner’s final answer. ' +
   'Use AskUserQuestion for task-local clarification. Treat shared team decisions supplied in prompts as constraints. ' +
-  'Explain progress briefly. Do not read secrets unless necessary for the explicitly requested task.';
+  'Explain progress briefly. Do not read secrets unless necessary for the explicitly requested task. ' +
+  decisionPresentationInstructions('claude');
 
 /** Claude Code runs locally through its official Agent SDK; only public events leave this adapter. */
 export class ClaudeClient implements HarnessClient {
@@ -102,7 +106,7 @@ export class ClaudeClient implements HarnessClient {
       tools: [
         tool(
           'team_decision',
-          'Ask the team to vote on a consequential shared API, dependency, architecture, or product decision. Waits for the owner’s final answer.',
+          decisionToolDescription,
           {
             question: z.string().min(1).max(1000),
             context: z.string().min(1).max(3000),
@@ -147,7 +151,7 @@ export class ClaudeClient implements HarnessClient {
       interrupted: false,
       done: Promise.resolve(),
       query: this.makeQuery({
-        prompt: text,
+        prompt: decisionAwarePrompt(text, 'claude'),
         options: {
           cwd: this.cwd,
           abortController: controller,
