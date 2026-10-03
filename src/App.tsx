@@ -24,6 +24,8 @@ import {
   MessageSquare,
   MoreHorizontal,
   Plus,
+  PanelRightClose,
+  PanelRightOpen,
   Radio,
   RefreshCw,
   Send,
@@ -38,6 +40,7 @@ import {
   Zap,
 } from 'lucide-react';
 import type { Agent, Decision, HostConfig, Room, Session } from '../shared/types';
+import { VOTE_DURATION_MS } from '../shared/types';
 import { api } from './api';
 
 const SESSION_KEY = 'multiplayer-session-v1';
@@ -462,7 +465,7 @@ function Lobby({
             </h2>
             <div className="segmented">
               <button className={tab === 'host' ? 'selected' : ''} onClick={() => setTab('host')}>
-                Host a room
+                Create a room
               </button>
               <button className={tab === 'join' ? 'selected' : ''} onClick={() => setTab('join')}>
                 Join your team
@@ -504,7 +507,7 @@ function Lobby({
                       <GitBranch size={16} />
                       <strong>{config?.repoName || 'Finding your project…'}</strong>
                     </div>
-                    <span>{config?.branch || 'Local Git project'} · hosted on this computer</span>
+                    <span>{config?.branch || 'Local Git project'} · runs on the server</span>
                   </div>
                   {config?.dirty && (
                     <p className="form-note">
@@ -522,9 +525,7 @@ function Lobby({
                     <ArrowRight size={17} />
                   </Button>
                   {config && !config.canHost && (
-                    <p className="form-note">
-                      Open this page on the host computer to create a live room.
-                    </p>
+                    <p className="form-note">Room creation is currently unavailable.</p>
                   )}
                   {config && !config.codexAvailable && (
                     <p className="form-note">
@@ -614,6 +615,29 @@ function Workspace({
 }) {
   const [view, setView] = useState<'workspace' | 'changes' | 'decisions'>('workspace');
   const [rail, setRail] = useState<'decisions' | 'activity'>('decisions');
+  const [railCollapsed, setRailCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem('multiplayer-sidebar-collapsed') === 'true';
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem('multiplayer-sidebar-collapsed', String(railCollapsed));
+    } catch {
+      /* The control still works when browser storage is unavailable. */
+    }
+  }, [railCollapsed]);
+  function showDecisions() {
+    setRail('decisions');
+    setRailCollapsed(false);
+    requestAnimationFrame(() =>
+      document
+        .querySelector('.right-rail')
+        ?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }),
+    );
+  }
   const [modal, setModal] = useState<'invite' | 'agent' | 'decision' | null>(null);
   const [focus, setFocus] = useState<string | null>(null);
   const [diff, setDiff] = useState<{
@@ -629,6 +653,9 @@ function Workspace({
   const me = room.members.find((m) => m.id === session.memberId)!;
   const pending = room.decisions.filter(activeDecision);
   const settled = room.decisions.filter((d) => d.scope === 'team' && d.status === 'resolved');
+  const decisionHistory = room.decisions.filter(
+    (d) => d.scope === 'team' && ['resolved', 'cancelled'].includes(d.status),
+  );
   const changedCount = new Set(room.agents.flatMap((a) => a.files)).size;
   const workingCount = room.agents.filter((a) => a.status === 'working').length;
   const agents = focus ? room.agents.filter((a) => a.id === focus) : room.agents;
@@ -682,7 +709,7 @@ function Workspace({
       setModal(null);
       setQuestion('');
       setChoices(['', '']);
-      setRail('decisions');
+      showDecisions();
     }
     setBusy(false);
   }
@@ -771,10 +798,20 @@ function Workspace({
               </p>
             </div>
             <div className="heading-actions">
+              <button
+                className="button secondary sidebar-toggle"
+                aria-controls="team-sidebar"
+                aria-expanded={!railCollapsed}
+                onClick={() => setRailCollapsed(!railCollapsed)}
+              >
+                {railCollapsed ? <PanelRightOpen size={16} /> : <PanelRightClose size={16} />}
+                {railCollapsed ? 'Show sidebar' : 'Hide sidebar'}
+                {pending.length > 0 && <span className="pending-count">{pending.length}</span>}
+              </button>
               {room.mode === 'demo' && room.hostId === me.id && (
                 <Button
                   onClick={() => {
-                    setRail('decisions');
+                    showDecisions();
                     void action('/api/demo/scenario');
                   }}
                   disabled={!enabled || pending.some((d) => d.scope === 'team')}
@@ -819,8 +856,7 @@ function Workspace({
             <button
               className="mobile-decision-alert"
               onClick={() => {
-                setRail('decisions');
-                document.querySelector('.right-rail')?.scrollIntoView({ behavior: 'smooth' });
+                showDecisions();
               }}
             >
               <Vote size={16} />
@@ -831,7 +867,7 @@ function Workspace({
               <ArrowDown size={15} />
             </button>
           )}
-          <div className="content-with-rail">
+          <div className={`content-with-rail ${railCollapsed ? 'rail-collapsed' : ''}`}>
             <main className="workspace-main">
               <div className="section-bar">
                 <div className="view-tabs">
@@ -852,7 +888,7 @@ function Workspace({
                     className={view === 'decisions' ? 'active' : ''}
                     onClick={() => setView('decisions')}
                   >
-                    Decision log<span>{settled.length}</span>
+                    Decision log<span>{decisionHistory.length}</span>
                   </button>
                 </div>
                 {focus && (
@@ -896,10 +932,7 @@ function Workspace({
                         onFocus={() => setFocus(focus === agent.id ? null : agent.id)}
                         onFile={(file) => void showDiff(file, [agent.id])}
                         onQuestion={() => {
-                          setRail('decisions');
-                          document
-                            .querySelector('.right-rail')
-                            ?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                          showDecisions();
                         }}
                       />
                     ))}
@@ -989,27 +1022,41 @@ function Workspace({
                       prompts.
                     </p>
                   </div>
-                  {settled.length === 0 ? (
+                  {decisionHistory.length === 0 ? (
                     <Empty
                       icon={<Vote />}
                       title="The next call is yours."
                       text="Start a team vote. Agreed decisions will be collected here."
                     />
                   ) : (
-                    settled.map((d, i) => (
+                    decisionHistory.map((d, i) => (
                       <div className="log-entry" key={d.id}>
                         <span className="log-number">
-                          {String(settled.length - i).padStart(2, '0')}
+                          {String(decisionHistory.length - i).padStart(2, '0')}
                         </span>
                         <div>
                           <span className="eyebrow">
-                            TEAM DECISION · {formatTime(d.resolvedAt!)}
+                            {d.status === 'cancelled'
+                              ? 'CANCELLED BEFORE APPROVAL'
+                              : `TEAM DECISION · ${formatTime(d.resolvedAt!)}`}
                           </span>
                           <h3>{d.question}</h3>
                           <p>
-                            <CheckCheck size={17} />
-                            {d.answer}
+                            {d.status === 'cancelled' ? <X size={17} /> : <CheckCheck size={17} />}
+                            {d.answer ?? 'This decision was cancelled. No answer was shared.'}
                           </p>
+                          <details className="discussion-archive">
+                            <summary>
+                              <MessageSquare size={14} /> Discussion · {d.messages.length}
+                            </summary>
+                            <DecisionChat
+                              decision={d}
+                              room={room}
+                              me={me.id}
+                              action={action}
+                              enabled={enabled}
+                            />
+                          </details>
                         </div>
                       </div>
                     ))
@@ -1017,7 +1064,7 @@ function Workspace({
                 </div>
               )}
             </main>
-            <aside className="right-rail">
+            <aside id="team-sidebar" className="right-rail" hidden={railCollapsed}>
               <div className="rail-tabs">
                 <button
                   className={rail === 'decisions' ? 'active' : ''}
@@ -1095,7 +1142,8 @@ function Workspace({
                     <div>
                       <strong>Small pause. Shared progress.</strong>
                       <p>
-                        Team votes last 30 seconds. Ties go to the owner. Other agents keep moving.
+                        Vote and discuss for 60 seconds. Then the decision owner approves the final
+                        answer. Other agents keep moving.
                       </p>
                     </div>
                   </div>
@@ -1256,8 +1304,8 @@ function Workspace({
           close={() => setModal(null)}
         >
           <p className="modal-description">
-            Ask one clear question. Your team has 30 seconds to vote, and the result is shared with
-            every agent.
+            Ask one clear question. Your team has 60 seconds to vote and discuss. You approve the
+            final answer before it reaches the agents.
           </p>
           <form onSubmit={submitDecision}>
             <label>
@@ -1621,13 +1669,28 @@ function DecisionCard({
   enabled: boolean;
 }) {
   const [answer, setAnswer] = useState('');
-  const seconds = Math.min(30, Math.max(0, Math.ceil(((d.closesAt ?? now) - now) / 1000)));
-  const canResolve =
-    [d.ownerId, room.hostId].includes(me) && (d.scope !== 'team' || d.status === 'owner-needed');
+  const [busy, setBusy] = useState(false);
+  const seconds = Math.min(
+    VOTE_DURATION_MS / 1000,
+    Math.max(0, Math.ceil(((d.closesAt ?? now) - now) / 1000)),
+  );
+  const canResolve = d.ownerId === me && (d.scope !== 'team' || d.status === 'owner-needed');
   const canVote =
     d.scope === 'team' && d.status === 'open' && seconds > 0 && d.eligible.includes(me);
   const agent = room.agents.find((a) => a.id === d.agentId);
+  const owner = room.members.find((m) => m.id === d.ownerId);
   const voteCount = Object.keys(d.votes).length;
+  const counts = d.options.map(
+    (_, index) => Object.values(d.votes).filter((v) => v === index).length,
+  );
+  const max = Math.max(0, ...counts);
+  const winner =
+    max > 0 && counts.filter((count) => count === max).length === 1 ? counts.indexOf(max) : null;
+  async function approve(value: string) {
+    setBusy(true);
+    await action(`/api/decisions/${d.id}/resolve`, { answer: value });
+    setBusy(false);
+  }
   return (
     <div className={`decision-card ${d.scope}`}>
       <div className="decision-top">
@@ -1642,51 +1705,53 @@ function DecisionCard({
         {d.scope === 'team' && (
           <span className="countdown">
             <Clock3 size={12} />
-            {d.status === 'owner-needed' ? 'Owner’s call' : `${seconds}s`}
+            {d.status === 'owner-needed' ? 'Awaiting approval' : `${seconds}s`}
           </span>
         )}
       </div>
       <h3>{d.question}</h3>
       {d.detail && <p className="decision-detail">{d.detail}</p>}
-      {agent && (
-        <div className="decision-source">
-          <span className={`source-dot ${colors[agent.color]}`} />
-          {agent.name} is waiting
-        </div>
-      )}
+      <div className="decision-source">
+        {agent && <span className={`source-dot ${colors[agent.color]}`} />}
+        {agent ? `${agent.name} is waiting · ` : ''}
+        {owner?.name} makes the final call
+      </div>
       <div className="vote-options">
-        {d.options.map((option, index) => {
-          const count = Object.values(d.votes).filter((v) => v === index).length;
-          return (
-            <button
-              key={option}
-              className={d.votes[me] === index ? 'voted' : ''}
-              disabled={!enabled || (!canVote && !canResolve)}
-              onClick={() =>
-                void action(
-                  `/api/decisions/${d.id}/${canVote ? 'vote' : 'resolve'}`,
-                  canVote ? { option: index } : { answer: option },
-                )
-              }
-            >
-              <span className="option-letter">{String.fromCharCode(65 + index)}</span>
-              <span>{option}</span>
-              {d.scope === 'team' && (
-                <span className="option-count">
-                  {count}
-                  {d.votes[me] === index && <Check size={12} />}
-                </span>
-              )}
-            </button>
-          );
-        })}
+        {d.options.map((option, index) => (
+          <button
+            key={option}
+            className={
+              (canResolve && d.scope === 'team' ? answer === option : d.votes[me] === index)
+                ? 'voted'
+                : ''
+            }
+            aria-pressed={
+              canResolve && d.scope === 'team' ? answer === option : d.votes[me] === index
+            }
+            disabled={!enabled || busy || (!canVote && !canResolve)}
+            onClick={() => {
+              if (canVote) void action(`/api/decisions/${d.id}/vote`, { option: index });
+              else if (d.scope === 'team') setAnswer(option);
+              else void approve(option);
+            }}
+          >
+            <span className="option-letter">{String.fromCharCode(65 + index)}</span>
+            <span>{option}</span>
+            {d.scope === 'team' && (
+              <span className="option-count">
+                {counts[index]}
+                {d.votes[me] === index && <Check size={12} />}
+              </span>
+            )}
+          </button>
+        ))}
       </div>
       {d.options.length === 0 && canResolve && (
         <form
           className="answer-form"
           onSubmit={(e) => {
             e.preventDefault();
-            void action(`/api/decisions/${d.id}/resolve`, { answer });
+            void approve(answer);
           }}
         >
           <input
@@ -1695,12 +1760,13 @@ function DecisionCard({
             value={answer}
             onChange={(e) => setAnswer(e.target.value)}
             required
+            maxLength={3000}
           />
           <button
             className="icon-button"
             type="submit"
             aria-label="Send answer"
-            disabled={!enabled}
+            disabled={!enabled || busy}
           >
             <Send size={16} />
           </button>
@@ -1709,7 +1775,11 @@ function DecisionCard({
       {d.scope === 'team' && (
         <>
           <div className="vote-progress">
-            <span style={{ width: `${Math.min(100, ((30 - seconds) / 30) * 100)}%` }} />
+            <span
+              style={{
+                width: `${Math.min(100, ((VOTE_DURATION_MS / 1000 - seconds) / (VOTE_DURATION_MS / 1000)) * 100)}%`,
+              }}
+            />
           </div>
           <div className="vote-footer">
             <span>
@@ -1717,7 +1787,7 @@ function DecisionCard({
             </span>
             <span>
               {d.status === 'owner-needed'
-                ? 'Choose an answer to continue'
+                ? 'Voting closed'
                 : d.votes[me] !== undefined
                   ? 'Your vote is in ✓'
                   : canVote
@@ -1725,12 +1795,37 @@ function DecisionCard({
                     : 'Watching this vote'}
             </span>
           </div>
+          {d.status === 'owner-needed' && (
+            <div className="owner-review" role="status">
+              <span className="eyebrow">
+                <Clock3 size={13} /> PAUSED FOR {owner?.name.toUpperCase()}
+              </span>
+              <p>
+                {winner === null ? 'No clear winner.' : `Team preference: ${d.options[winner]}.`}{' '}
+                {canResolve
+                  ? 'Select the final answer above, then approve when you’re ready.'
+                  : `Waiting for ${owner?.name} to approve the final answer.`}
+              </p>
+              {canResolve && (
+                <Button
+                  kind="primary"
+                  className="full"
+                  disabled={!enabled || busy || !answer}
+                  onClick={() => void approve(answer)}
+                >
+                  {busy ? <Loader2 size={15} className="spin" /> : <CheckCheck size={15} />}
+                  {agent ? 'Approve & resume agent' : 'Approve & share decision'}
+                </Button>
+              )}
+            </div>
+          )}
+          <DecisionChat decision={d} room={room} me={me} action={action} enabled={enabled} />
         </>
       )}
       {d.scope === 'owner' && d.options.length >= 2 && (
         <button
           className="promote-button"
-          disabled={!enabled}
+          disabled={!enabled || busy}
           onClick={() => void action(`/api/decisions/${d.id}/promote`)}
         >
           <Users size={13} />
@@ -1741,9 +1836,104 @@ function DecisionCard({
       {d.scope === 'approval' && (
         <p className="approval-note">
           <ShieldCheck size={12} />
-          The host must explicitly approve this action.
+          The room host must explicitly approve this action.
         </p>
       )}
     </div>
+  );
+}
+
+function DecisionChat({
+  decision,
+  room,
+  me,
+  action,
+  enabled,
+}: {
+  decision: Decision;
+  room: Room;
+  me: string;
+  action: Action;
+  enabled: boolean;
+}) {
+  const [draft, setDraft] = useState('');
+  const [busy, setBusy] = useState(false);
+  const list = useRef<HTMLDivElement>(null);
+  const stickToBottom = useRef(true);
+  const writable = activeDecision(decision);
+  useEffect(() => {
+    if (list.current && stickToBottom.current) list.current.scrollTop = list.current.scrollHeight;
+  }, [decision.messages.length, decision.messages.at(-1)?.id]);
+  async function send(e: FormEvent) {
+    e.preventDefault();
+    if (!draft.trim() || busy) return;
+    setBusy(true);
+    if (await action(`/api/decisions/${decision.id}/chat`, { text: draft })) {
+      setDraft('');
+      stickToBottom.current = true;
+    }
+    setBusy(false);
+  }
+  return (
+    <section className="decision-chat" aria-label={`Discussion: ${decision.question}`}>
+      <div className="chat-heading">
+        <MessageSquare size={13} />
+        <strong>Talk it through</strong>
+        <span>{decision.messages.length}</span>
+      </div>
+      <div
+        className="chat-messages"
+        role="log"
+        aria-label="Discussion messages"
+        aria-live="polite"
+        ref={list}
+        onScroll={() => {
+          const el = list.current;
+          if (el) stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 32;
+        }}
+      >
+        {decision.messages.length === 0 && (
+          <p className="chat-empty">Make your case. This conversation belongs to this vote.</p>
+        )}
+        {decision.messages.map((message) => {
+          const member = room.members.find((m) => m.id === message.memberId);
+          return (
+            <div
+              className={`chat-message ${message.memberId === me ? 'mine' : ''}`}
+              key={message.id}
+            >
+              <div>
+                <span className={`chat-author ${colors[member?.color ?? 0]}`}>
+                  {member?.name ?? 'Teammate'}
+                </span>
+                <time dateTime={new Date(message.at).toISOString()}>{formatTime(message.at)}</time>
+              </div>
+              <p>{message.text}</p>
+            </div>
+          );
+        })}
+      </div>
+      {writable ? (
+        <form className="chat-compose" onSubmit={send}>
+          <input
+            aria-label={`Message about ${decision.question}`}
+            placeholder="Share your thinking…"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            maxLength={1000}
+            disabled={!enabled || busy}
+          />
+          <button
+            type="submit"
+            aria-label={`Send discussion message about ${decision.question}`}
+            disabled={!enabled || busy || !draft.trim()}
+          >
+            {busy ? <Loader2 size={14} className="spin" /> : <Send size={14} />}
+          </button>
+        </form>
+      ) : (
+        <p className="chat-closed">Discussion saved · read-only</p>
+      )}
+    </section>
   );
 }

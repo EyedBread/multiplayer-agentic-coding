@@ -27,6 +27,7 @@ export type Decision = {
   detail: string;
   options: string[];
   votes: Record<string, number>;
+  messages: DecisionMessage[];
   eligible: string[];
   scope: 'team' | 'owner' | 'approval';
   status: 'open' | 'owner-needed' | 'resolved' | 'cancelled';
@@ -35,6 +36,8 @@ export type Decision = {
   answer?: string;
   resolvedAt?: number;
 };
+export type DecisionMessage = { id: string; memberId: string; text: string; at: number };
+export const VOTE_DURATION_MS = 60_000;
 export type Activity = {
   id: string;
   text: string;

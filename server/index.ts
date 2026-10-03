@@ -6,18 +6,20 @@ import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { Agent, Decision, Room, Session } from '../shared/types.js';
+import { VOTE_DURATION_MS } from '../shared/types.js';
 import {
   activity,
   addDecision,
   castVote,
+  closeVoting,
   createRoom,
+  discussDecision,
   entry,
   makeAgent,
   overlaps,
   settleDecision,
   token,
   uid,
-  voteOutcome,
 } from './room.js';
 import { changedFiles, createWorktree, fileDiff, repoInfo } from './git.js';
 import { CODEX_BINARY, CodexClient } from './codex.js';
@@ -352,13 +354,11 @@ app.get('/api/config', async (req, res) => {
     branch: info.branch,
     dirty: info.dirty,
     codexAvailable,
-    canHost: local(req.socket.remoteAddress),
+    canHost: true,
   });
 });
 app.post('/api/rooms', async (req, res) => {
   const mode = req.body.mode === 'live' ? 'live' : 'demo';
-  if (mode === 'live' && !local(req.socket.remoteAddress))
-    return res.status(403).json({ error: 'Live rooms must be created from the host computer.' });
   if (rooms.size >= 20)
     throw new Error(
       'This host has reached its room limit. Restart the server to clear inactive rooms.',
@@ -548,18 +548,19 @@ app.post('/api/decisions/:id/:action', async (req, res) => {
   if (!['open', 'owner-needed'].includes(d.status))
     throw new Error('This decision is already closed.');
   if (req.params.action === 'vote') castVote(room, d, session.memberId, req.body.option);
+  else if (req.params.action === 'chat') discussDecision(room, d, session.memberId, req.body.text);
   else if (req.params.action === 'promote') {
     if (d.scope !== 'owner' || d.options.length < 2)
       throw new Error('Only questions with two or more choices can become team votes.');
     d.scope = 'team';
-    d.closesAt = Date.now() + 30000;
+    d.closesAt = Date.now() + VOTE_DURATION_MS;
     d.eligible = room.members.map((m) => m.id);
     activity(room, 'An agent question became a team vote', 'decision');
   } else if (req.params.action === 'resolve') {
-    if (![d.ownerId, room.hostId].includes(session.memberId))
+    if (d.ownerId !== session.memberId)
       return res
         .status(403)
-        .json({ error: 'Only the decision owner or host can settle this question.' });
+        .json({ error: 'Only the decision owner can approve the final answer.' });
     if (d.scope === 'team' && d.status === 'open')
       throw new Error('Let the voting window finish first.');
     const answer = text(req.body.answer, 'Answer', 3000);
@@ -642,14 +643,7 @@ server.on('upgrade', (req, socket, head) => {
 const voteTimer = setInterval(() => {
   for (const room of rooms.values())
     for (const d of room.decisions) {
-      if (d.scope !== 'team' || d.status !== 'open' || Date.now() < (d.closesAt ?? Infinity))
-        continue;
-      const winner = voteOutcome(d);
-      if (winner === null) {
-        d.status = 'owner-needed';
-        activity(room, 'Voting ended without a winner. The owner can decide.', 'decision');
-        broadcast(room);
-      } else void resolve(room, d, d.options[winner]);
+      if (closeVoting(room, d)) broadcast(room);
     }
   for (const [ip, attempts] of joinAttempts)
     if (attempts.until < Date.now()) joinAttempts.delete(ip);

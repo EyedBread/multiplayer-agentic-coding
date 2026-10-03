@@ -2,7 +2,7 @@
 
 **A shared coding room for your team and your agents.**
 
-One person hosts a Git project. Teammates join in their browsers, follow every agent’s session, vote on shared decisions, and spot overlapping changes before merging.
+One person runs the server with a Git project. Teammates join in their browsers, create rooms, follow every agent’s session, discuss and vote on shared decisions, and spot overlapping changes before merging. Agents currently run on the server computer using its Codex installation and account.
 
 ## Run it
 
@@ -39,28 +39,29 @@ Add `.multiplayer/` to that repository’s `.gitignore` before hosting. Agent wo
 HOST=0.0.0.0 HOST_REPO_PATH=/absolute/path/to/your/repo npm run dev
 ```
 
-Create the room on the host computer, then open the app using the host’s LAN address (for example `http://192.168.1.10:3000`) and share that address with the room code. A `localhost` invite works only on the host itself. Keep the server running while the team works.
+Open the app using the server computer’s LAN address (for example `http://192.168.1.10:3000`). Any teammate who can reach the server can create a room using the configured Git project, or join an existing room with its code. Share the LAN address and room code. A `localhost` invite works only on the server computer itself. Keep the server running while the team works.
 
-This MVP is for trusted teams on a local network. Invite codes grant room access. Each member receives a separate session token, and the server enforces ownership for agent controls. Command and filesystem approval requests require the host. Do not expose this development server directly to the public internet; internet hosting needs HTTPS, account authentication, and stronger process isolation.
+This MVP is for trusted teams on a local network. Invite codes grant room access. Each member receives a separate session token, and the server enforces ownership for agent controls. A room’s creator is its host and handles command and filesystem approval requests, including for rooms created from another computer. All rooms use the server computer’s project and Codex account. Do not expose this development server directly to the public internet; internet hosting needs HTTPS, account authentication, and stronger process isolation.
 
 ## Try the demo
 
 1. Open a demo room and invite a teammate, or join from another browser tab.
 2. Select **Run team scenario**. Two simulated agents change the same shared event file.
 3. Open **Compare changes** to inspect both proposals.
-4. Vote on the event format. Counts update in every connected browser.
-5. After 30 seconds, the winning choice enters the decision log and reaches all demo agents.
+4. Vote on the event format and discuss the choices in that vote’s chat. Counts and messages update in every connected browser.
+5. After 60 seconds, voting closes and the agent keeps waiting. The decision owner selects the final answer and explicitly approves it before the session continues.
 
-You can also create your own votes, add agents, send simulated prompts, and inspect the activity feed.
+You can also create your own votes, add agents, send simulated prompts, and inspect the activity feed. Collapse the right sidebar when you want more space for agent sessions, then reopen it to return to decisions and activity.
 
 ## Live workflow
 
 - Create a live room and add an agent with a name and task. This creates its own worktree and Codex conversation.
 - Send a prompt to start work. Everyone can see public agent messages, commands, status, and changed files. The owner and host can send prompts or stop the agent.
 - Agents have a `team_decision` tool for shared API, dependency, architecture, and product choices. Ordinary structured agent questions go to their owner; any teammate can promote a question with multiple choices to a team vote.
-- Team votes last **30 seconds**. Each eligible member gets one changeable ballot. A unique plurality wins; a tie or no votes requires the owner or host to choose. Teammates joining after a vote opens participate starting with the next vote.
+- Team votes last **60 seconds**. Each eligible member gets one changeable ballot. The tally informs the decision; it never automatically resumes the agent. Once voting closes, the decision owner selects and explicitly approves the final answer, even when there is a clear winner. The owner is the asking agent’s owner, or the initiator of a manually created vote. The room host cannot override another owner’s decision. Teammates joining after a vote opens participate starting with the next vote.
+- Each team vote has its own real-time discussion. All room members, including people who joined after voting opened, can send messages while voting or owner approval is pending. Each discussion keeps its latest 100 messages, with up to 1,000 characters per message. Settled or cancelled discussions are read-only and remain available in the decision history while the server is running.
 - Only the asking agent waits. Settled decisions are sent to running agents with `turn/steer` and included in every subsequent prompt. “Decision queued” means an agent has not yet received the latest shared context. Delivery is not a guarantee that the implementation follows the decision.
-- Permission approvals never become votes and never time out into permission grants. The host must explicitly approve or decline.
+- Permission approvals never become votes and never time out into permission grants. The room host must explicitly approve or decline.
 - File tracking compares each worktree against its starting commit every two seconds, including staged, unstaged, committed, deleted, and untracked files. Changes to the same path trigger a **potential overlap**, not a claim of a semantic or merge conflict.
 
 When ready, review and integrate the agents’ branches using Git. Worktrees remain available after the host stops.
@@ -87,7 +88,7 @@ When ready, review and integrate the agents’ branches using Git. Worktrees rem
 ## Architecture
 
 - **React + TypeScript + Vite:** responsive room interface, session panels, decisions, and diff views.
-- **Express + WebSocket:** authoritative in-memory room state, membership, presence, voting deadlines, and access checks.
+- **Express + WebSocket:** authoritative in-memory room state, membership, presence, voting deadlines, per-vote discussion, owner approval, and access checks.
 - **Codex app-server over stdio:** one child process per agent, streamed public events, structured input, dynamic team decisions, approval replies, and interruption.
 - **Git worktrees:** separate files and branches for each agent with shared visibility in the browser.
 
@@ -95,9 +96,15 @@ When ready, review and integrate the agents’ branches using Git. Worktrees rem
 
 Protocol reference: [Codex app-server](https://learn.chatgpt.com/docs/app-server). Dynamic tools and structured user input are experimental; the CLI version is pinned and should be upgraded with the integration tests.
 
+### Bring your own harness: next phase
+
+Local runners are not implemented in this version. Joining from Windows, macOS, or another device opens a browser client; it does not clone the repository or start a harness on that device. Every live agent currently runs Codex on the server computer in a separate worktree.
+
+The intended next architecture starts with a selected GitHub or GitLab repository and a shared starting commit. Each teammate installs a local runner, clones the project on their own machine, and connects their chosen harness, such as Codex, Claude Code, or Gemini. Credentials and execution stay on that teammate’s machine. The server coordinates membership, public session events, discussions, approved decisions, and potential overlaps. Events need repository and commit identifiers so overlap comparisons refer to the same project and starting point. A browser alone cannot perform the local cloning and harness execution; the runner supplies that connection. Harness adapters and decision delivery acknowledgments are part of that future work.
+
 ## MVP boundaries
 
-- Room state, membership tokens, votes, and the displayed activity feed live in memory. Restarting the host ends its rooms. Git worktrees and Codex’s own conversation files remain on disk, but reconnecting old rooms after a restart is not implemented.
+- Room state, membership tokens, votes, discussion messages, and the displayed activity feed live in memory. Restarting the host ends its rooms. Git worktrees and Codex’s own conversation files remain on disk, but reconnecting old rooms after a restart is not implemented.
 - Maximum six agents and twelve members per room. Reconnecting the same browser tab preserves its membership while the host is running.
 - No automatic merging, semantic conflict detection, remote container isolation, arbitrary harness adapters, or private credential entry through shared sessions.
 - Unsupported external app forms are declined. Plain prose questions are visible in the transcript; only structured questions and `team_decision` calls create decision cards.
