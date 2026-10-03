@@ -43,6 +43,12 @@ Open the app using the server computer’s LAN address (for example `http://192.
 
 This MVP is for trusted teams on a local network. Invite codes grant room access. Each member receives a separate session token, and the server enforces ownership for agent controls. A room’s creator is its host and handles command and filesystem approval requests, including for rooms created from another computer. All rooms use the server computer’s project and Codex account. Do not expose this development server directly to the public internet; internet hosting needs HTTPS, account authentication, and stronger process isolation.
 
+### Leave and return to your profile
+
+The browser remembers each room profile. **Leave room** returns to the lobby without discarding membership. Select the saved **Rejoin** card, or enter the same room code, to return with the original member ID and control of your agents. This also works after closing a tab and reopening the same server address in the same browser profile. Active rooms remain independent across tabs.
+
+Existing open sessions are remembered when the updated client loads. Refresh an original session tab once before leaving it. Saved profiles use their original session token; matching another member’s display name does not grant access. A failed connection keeps the saved profile for retry; an expired login or ended room removes that saved credential. Server restarts still end rooms, and clearing site storage, using a different browser profile, or changing the server address can make saved credentials unavailable. Previously discarded tokens cannot be recovered by name; an original tab that still has access can save its membership by loading the updated client.
+
 ## Try the demo
 
 1. Open a demo room and invite a teammate, or join from another browser tab.
@@ -105,7 +111,7 @@ The intended next architecture starts with a selected GitHub or GitLab repositor
 ## MVP boundaries
 
 - Room state, membership tokens, votes, discussion messages, and the displayed activity feed live in memory. Restarting the host ends its rooms. Git worktrees and Codex’s own conversation files remain on disk, but reconnecting old rooms after a restart is not implemented.
-- Maximum six agents and twelve members per room. Reconnecting the same browser tab preserves its membership while the host is running.
+- Maximum six agents and twelve members per room. Leaving and rejoining a remembered room preserves membership while the host is running, including across browser tabs and visits.
 - No automatic merging, semantic conflict detection, remote container isolation, arbitrary harness adapters, or private credential entry through shared sessions.
 - Unsupported external app forms are declined. Plain prose questions are visible in the transcript; only structured questions and `team_decision` calls create decision cards.
 

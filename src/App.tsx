@@ -41,9 +41,21 @@ import {
 } from 'lucide-react';
 import type { Agent, Decision, HostConfig, Room, Session } from '../shared/types';
 import { VOTE_DURATION_MS } from '../shared/types';
-import { api } from './api';
+import { api, ApiError } from './api';
+import { createMembershipStore, normalizeRoomCode, type SavedMembership } from './membership';
 
-const SESSION_KEY = 'multiplayer-session-v1';
+const memberships = createMembershipStore(
+  {
+    getItem: (key) => localStorage.getItem(key),
+    setItem: (key, value) => localStorage.setItem(key, value),
+    removeItem: (key) => localStorage.removeItem(key),
+  },
+  {
+    getItem: (key) => sessionStorage.getItem(key),
+    setItem: (key, value) => sessionStorage.setItem(key, value),
+    removeItem: (key) => sessionStorage.removeItem(key),
+  },
+);
 const colors = ['lime', 'lavender', 'peach', 'blue'];
 const formatTime = (at: number) =>
   new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -183,13 +195,7 @@ function Modal({
 }
 
 export function App() {
-  const [session, setSession] = useState<Session | null>(() => {
-    try {
-      return JSON.parse(sessionStorage.getItem(SESSION_KEY) || 'null');
-    } catch {
-      return null;
-    }
-  });
+  const [session, setSession] = useState<Session | null>(() => memberships.active());
   const [room, setRoom] = useState<Room | null>(null);
   const [config, setConfig] = useState<HostConfig | null>(null);
   const [connection, setConnection] = useState<'connecting' | 'connected' | 'disconnected'>(
@@ -223,14 +229,15 @@ export function App() {
       try {
         const state = await api<Room>('/api/room', session);
         if (closed) return;
+        memberships.remember(session, state);
         setRoom(state);
       } catch (e) {
         if (closed) return;
         const message = (e as Error).message;
         setError(message);
         setConnection('disconnected');
-        if (/Join a room|room has ended/.test(message)) {
-          sessionStorage.removeItem(SESSION_KEY);
+        if (e instanceof ApiError && [401, 404].includes(e.status)) {
+          memberships.forget(session.token);
           setSession(null);
           setRoom(null);
           return;
@@ -242,10 +249,12 @@ export function App() {
         `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws?token=${encodeURIComponent(session.token)}`,
       );
       socket.onopen = () => {
+        if (closed) return;
         retry = 0;
         setConnection('connected');
       };
       socket.onmessage = (event) => {
+        if (closed) return;
         try {
           const message = JSON.parse(event.data);
           if (message.type === 'state') setRoom(message.room);
@@ -268,14 +277,24 @@ export function App() {
     };
   }, [session]);
   function enter(result: { session: Session; room: Room }) {
-    sessionStorage.setItem(SESSION_KEY, JSON.stringify(result.session));
+    const remembered = memberships.enter(result.session, result.room);
     setSession(result.session);
     setRoom(result.room);
-    setError('');
+    setError(
+      remembered
+        ? ''
+        : 'Browser storage is unavailable. Keep this tab open to retain access to your agents.',
+    );
     history.replaceState({}, '', location.pathname);
   }
   function leave() {
-    sessionStorage.removeItem(SESSION_KEY);
+    if (session && room && !memberships.remember(session, room)) {
+      setError(
+        'Your browser could not remember this profile. Enable site storage before leaving so you can return to your agents.',
+      );
+      return;
+    }
+    memberships.leave();
     setSession(null);
     setRoom(null);
     setError('');
@@ -345,11 +364,36 @@ function Lobby({
   onError: (s: string) => void;
 }) {
   const inviteCode = new URLSearchParams(location.search).get('join') || '';
+  const [saved, setSaved] = useState(() => memberships.list());
   const [tab, setTab] = useState<'host' | 'join'>(inviteCode ? 'join' : 'host');
   const [name, setName] = useState('');
   const [roomName, setRoomName] = useState('The build room');
   const [code, setCode] = useState(inviteCode);
   const [busy, setBusy] = useState('');
+  const [newProfile, setNewProfile] = useState(false);
+  const returning =
+    !newProfile &&
+    saved.find((item) => normalizeRoomCode(item.roomCode) === normalizeRoomCode(code));
+  useEffect(() => {
+    const update = () => setSaved(memberships.list());
+    window.addEventListener('storage', update);
+    return () => window.removeEventListener('storage', update);
+  }, []);
+  async function resume(saved: SavedMembership) {
+    setBusy(`resume:${saved.session.memberId}`);
+    try {
+      enter(await memberships.resume(saved, (session) => api<Room>('/api/room', session)));
+    } catch (e) {
+      setSaved(memberships.list());
+      onError(
+        e instanceof ApiError && [401, 404].includes(e.status)
+          ? 'This saved room profile has expired. The server may have restarted; ask your teammate for the current room code.'
+          : (e as Error).message,
+      );
+    } finally {
+      setBusy('');
+    }
+  }
   async function create(mode: 'demo' | 'live') {
     setBusy(mode);
     try {
@@ -368,6 +412,15 @@ function Lobby({
   }
   async function join(e: FormEvent) {
     e.preventDefault();
+    const previous =
+      !newProfile &&
+      memberships
+        .list()
+        .find((item) => normalizeRoomCode(item.roomCode) === normalizeRoomCode(code));
+    if (previous) {
+      await resume(previous);
+      return;
+    }
     setBusy('join');
     try {
       enter(await api('/api/join', null, { code, memberName: name.trim() || 'You' }));
@@ -463,6 +516,38 @@ function Lobby({
               <br />
               with a room.
             </h2>
+            {saved.length > 0 && (
+              <section className="saved-rooms" aria-label="Remembered room profiles">
+                <span className="eyebrow">PICK UP WHERE YOU LEFT OFF</span>
+                <div className="saved-room-list">
+                  {saved.map((item) => (
+                    <button
+                      key={`${item.session.roomId}:${item.session.memberId}`}
+                      type="button"
+                      disabled={!!busy}
+                      onClick={() => void resume(item)}
+                      aria-label={`Rejoin ${item.roomName} as ${item.memberName}`}
+                    >
+                      <span className="saved-room-icon">
+                        <Users size={16} />
+                      </span>
+                      <span>
+                        <strong>{item.roomName}</strong>
+                        <small>
+                          Return as {item.memberName} · {item.roomCode}
+                        </small>
+                      </span>
+                      {busy === `resume:${item.session.memberId}` ? (
+                        <Loader2 size={16} className="spin" />
+                      ) : (
+                        <ArrowRight size={16} />
+                      )}
+                    </button>
+                  ))}
+                </div>
+                <p>Your profile and agent ownership stay with you when you leave.</p>
+              </section>
+            )}
             <div className="segmented">
               <button className={tab === 'host' ? 'selected' : ''} onClick={() => setTab('host')}>
                 Create a room
@@ -487,7 +572,8 @@ function Lobby({
                   autoComplete="given-name"
                   maxLength={32}
                   placeholder="What should we call you?"
-                  value={name}
+                  value={tab === 'join' && returning ? returning.memberName : name}
+                  disabled={tab === 'join' && !!returning}
                   onChange={(e) => setName(e.target.value)}
                 />
               </label>
@@ -559,19 +645,36 @@ function Lobby({
                       maxLength={20}
                       placeholder="Paste your room code"
                       value={code}
-                      onChange={(e) => setCode(e.target.value)}
+                      onChange={(e) => {
+                        setCode(e.target.value);
+                        setNewProfile(false);
+                      }}
                       required
                     />
                   </label>
                   <p className="form-note">
-                    Use the link or code shared by your host. Everyone joins the same running
-                    server.
+                    {returning
+                      ? `Welcome back, ${returning.memberName}. Rejoin your existing profile to keep access to your agents.`
+                      : 'Use the link or code shared by your host. This browser will remember your room profile.'}
                   </p>
                   <Button type="submit" kind="primary" className="full" disabled={!!busy}>
-                    {busy ? <Loader2 className="spin" size={17} /> : <Users size={17} />}Join the
-                    room
+                    {busy ? <Loader2 className="spin" size={17} /> : <Users size={17} />}
+                    {returning ? `Rejoin as ${returning.memberName}` : 'Join the room'}
                     <ArrowRight size={17} />
                   </Button>
+                  {returning && (
+                    <button
+                      className="different-profile"
+                      type="button"
+                      disabled={!!busy}
+                      onClick={() => {
+                        setNewProfile(true);
+                        setName('');
+                      }}
+                    >
+                      Different person? Join with a new profile
+                    </button>
+                  )}
                 </>
               )}
             </form>
@@ -739,7 +842,7 @@ function Workspace({
           </Button>
           <button
             className="icon-button exit"
-            title="Leave room"
+            title="Leave room — your profile is remembered on this browser"
             aria-label="Leave room"
             onClick={leave}
           >

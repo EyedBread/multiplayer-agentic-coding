@@ -3118,3 +3118,88 @@ textarea {
 .discussion-archive .chat-message p {
   display: block;
 }
+
+.saved-rooms {
+  margin: 0 0 22px;
+  padding: 14px;
+  border: 1px solid #56673d;
+  border-radius: 8px;
+  background: #26301e;
+}
+.saved-rooms > .eyebrow {
+  color: #bed891;
+  font-size: 8px;
+}
+.saved-room-list {
+  max-height: 200px;
+  overflow-y: auto;
+  margin-top: 10px;
+  scrollbar-width: thin;
+}
+.saved-room-list button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 11px 0;
+  border: 0;
+  border-top: 1px solid #3e4d2f;
+  text-align: left;
+  color: #dbe7c8;
+  background: transparent;
+}
+.saved-room-list button:hover:not(:disabled) {
+  color: var(--lime);
+}
+.saved-room-list button:disabled {
+  opacity: 0.5;
+}
+.saved-room-icon {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  background: #3c4b2c;
+  border-radius: 5px;
+  flex-shrink: 0;
+}
+.saved-room-list button > span:nth-child(2) {
+  flex: 1;
+  min-width: 0;
+}
+.saved-room-list strong {
+  display: block;
+  font-weight: 500;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.saved-room-list small {
+  display: block;
+  font-size: 9px;
+  color: #a5b492;
+  margin-top: 3px;
+  overflow-wrap: anywhere;
+}
+.saved-room-list button > svg {
+  flex-shrink: 0;
+}
+.saved-rooms > p {
+  color: #a8b695;
+  font-size: 10px;
+  line-height: 1.6;
+  margin: 8px 0 0;
+}
+.different-profile {
+  display: block;
+  width: 100%;
+  background: none;
+  border: 0;
+  color: #a9b89a;
+  font-size: 10px;
+  padding: 14px 0 0;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.different-profile:hover {
+  color: #dbe7c8;
+}

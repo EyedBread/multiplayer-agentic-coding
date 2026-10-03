@@ -13,7 +13,7 @@ import type { Agent, Room, Session } from '../shared/types.js';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 test(
-  'one teammate can run two live sessions and stop each independently',
+  'a teammate can resume ownership of two parallel live sessions with their saved membership',
   { timeout: 15000 },
   async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), 'multiplayer-parallel-'));
@@ -119,9 +119,24 @@ test(
           (decision) => decision.ownerId === peer.session.memberId && decision.status === 'open',
         ),
       );
-      await request(`/api/agents/${agents[0].id}/stop`, peer.session, {});
+      // Reopening with a persisted credential uses GET, without joining as a new member.
+      const returningSession: Session = JSON.parse(JSON.stringify(peer.session));
+      const returned: Room = await request('/api/room', returningSession);
+      assert.equal(returned.id, running.id);
+      assert.equal(returned.members.length, running.members.length);
+      assert.equal(
+        returned.members.filter((member) => member.id === returningSession.memberId).length,
+        1,
+      );
+      assert.deepEqual(
+        returned.agents.map((agent) => agent.id),
+        agents.map((agent) => agent.id),
+      );
+      assert.ok(returned.agents.every((agent) => agent.ownerId === returningSession.memberId));
+      assert.ok(returned.agents.every((agent) => agent.status === 'waiting'));
+      await request(`/api/agents/${agents[0].id}/stop`, returningSession, {});
       const oneStopped: Room = await until(
-        () => request('/api/room', peer.session),
+        () => request('/api/room', returningSession),
         (room: Room) => room.agents.find((agent) => agent.id === agents[0].id)?.status === 'idle',
       );
       assert.equal(oneStopped.agents.find((agent) => agent.id === agents[1].id)!.status, 'waiting');
@@ -133,9 +148,9 @@ test(
         oneStopped.decisions.find((decision) => decision.agentId === agents[1].id)!.status,
         'open',
       );
-      await request(`/api/agents/${agents[1].id}/stop`, peer.session, {});
+      await request(`/api/agents/${agents[1].id}/stop`, returningSession, {});
       await until(
-        () => request('/api/room', peer.session),
+        () => request('/api/room', returningSession),
         (room: Room) => room.agents.every((agent) => agent.status === 'idle'),
       );
       assert.equal((await git(dir, 'status', '--porcelain')).trim(), '');
