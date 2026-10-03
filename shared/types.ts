@@ -1,0 +1,69 @@
+export type AgentStatus = 'starting' | 'idle' | 'working' | 'waiting' | 'error';
+export type Member = { id: string; name: string; color: number; online: boolean };
+export type Entry = {
+  id: string;
+  kind: 'user' | 'agent' | 'command' | 'system' | 'error';
+  text: string;
+  at: number;
+};
+export type Agent = {
+  id: string;
+  ownerId: string;
+  name: string;
+  task: string;
+  color: number;
+  status: AgentStatus;
+  branch: string;
+  files: string[];
+  entries: Entry[];
+  contextVersion: number;
+  error?: string;
+};
+export type Decision = {
+  id: string;
+  agentId?: string;
+  ownerId: string;
+  question: string;
+  detail: string;
+  options: string[];
+  votes: Record<string, number>;
+  eligible: string[];
+  scope: 'team' | 'owner' | 'approval';
+  status: 'open' | 'owner-needed' | 'resolved' | 'cancelled';
+  createdAt: number;
+  closesAt?: number;
+  answer?: string;
+  resolvedAt?: number;
+};
+export type Activity = {
+  id: string;
+  text: string;
+  at: number;
+  kind: 'join' | 'work' | 'decision' | 'overlap';
+};
+export type Overlap = { path: string; agentIds: string[] };
+export type Room = {
+  id: string;
+  code: string;
+  name: string;
+  mode: 'demo' | 'live';
+  hostId: string;
+  repoName: string;
+  branch: string;
+  createdAt: number;
+  members: Member[];
+  agents: Agent[];
+  decisions: Decision[];
+  activity: Activity[];
+  overlaps: Overlap[];
+  decisionVersion: number;
+};
+export type Session = { roomId: string; memberId: string; token: string };
+export type HostConfig = {
+  repoName: string;
+  repoPath: string;
+  branch: string;
+  dirty: boolean;
+  codexAvailable: boolean;
+  canHost: boolean;
+};

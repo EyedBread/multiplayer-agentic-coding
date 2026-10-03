@@ -1,0 +1,1749 @@
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import {
+  ArrowDown,
+  ArrowRight,
+  ArrowUp,
+  ArrowUpRight,
+  Check,
+  CheckCheck,
+  ChevronDown,
+  ChevronRight,
+  CircleHelp,
+  Clock3,
+  Code2,
+  Command,
+  Copy,
+  FileCode2,
+  GitBranch,
+  GitCompareArrows,
+  Globe2,
+  LayoutGrid,
+  Link2,
+  Loader2,
+  LogOut,
+  MessageSquare,
+  MoreHorizontal,
+  Plus,
+  Radio,
+  RefreshCw,
+  Send,
+  ShieldCheck,
+  Sparkles,
+  Square,
+  Terminal,
+  Users,
+  Vote,
+  Waves,
+  X,
+  Zap,
+} from 'lucide-react';
+import type { Agent, Decision, HostConfig, Room, Session } from '../shared/types';
+import { api } from './api';
+
+const SESSION_KEY = 'multiplayer-session-v1';
+const colors = ['lime', 'lavender', 'peach', 'blue'];
+const formatTime = (at: number) =>
+  new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+const activeDecision = (d: Decision) => ['open', 'owner-needed'].includes(d.status);
+function Logo({ small = false }: { small?: boolean }) {
+  return (
+    <div className={`brand ${small ? 'brand-small' : ''}`}>
+      <span className="brand-mark">
+        <span />
+        <span />
+        <span />
+      </span>
+      <span>
+        multiplayer<span className="brand-period">.</span>
+      </span>
+    </div>
+  );
+}
+function Avatar({
+  name,
+  color = 0,
+  small = false,
+}: {
+  name: string;
+  color?: number;
+  small?: boolean;
+}) {
+  return (
+    <span className={`avatar ${colors[color % 4]} ${small ? 'small' : ''}`} title={name}>
+      {name.slice(0, 1).toUpperCase()}
+    </span>
+  );
+}
+function Button({
+  children,
+  onClick,
+  kind = 'secondary',
+  disabled,
+  type = 'button',
+  className = '',
+}: {
+  children: ReactNode;
+  onClick?: () => void;
+  kind?: 'primary' | 'secondary' | 'ghost';
+  disabled?: boolean;
+  type?: 'button' | 'submit';
+  className?: string;
+}) {
+  return (
+    <button
+      className={`button ${kind} ${className}`}
+      type={type}
+      onClick={onClick}
+      disabled={disabled}
+    >
+      {children}
+    </button>
+  );
+}
+
+function Modal({
+  title,
+  eyebrow,
+  children,
+  close,
+  wide = false,
+}: {
+  title: string;
+  eyebrow?: string;
+  children: ReactNode;
+  close: () => void;
+  wide?: boolean;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const closeRef = useRef(close);
+  closeRef.current = close;
+  useEffect(() => {
+    const previous = document.activeElement as HTMLElement | null;
+    const panel = ref.current!;
+    const focusable = () => [
+      ...panel.querySelectorAll<HTMLElement>(
+        'button:not(:disabled), input, textarea, select, a[href], [tabindex="0"]',
+      ),
+    ];
+    (focusable().find((el) => el.tagName === 'INPUT') || focusable()[0])?.focus();
+    const key = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeRef.current();
+      if (event.key === 'Tab') {
+        const nodes = focusable();
+        const first = nodes[0];
+        const last = nodes[nodes.length - 1];
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last?.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first?.focus();
+        }
+      }
+    };
+    document.addEventListener('keydown', key);
+    const overflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.removeEventListener('keydown', key);
+      document.body.style.overflow = overflow;
+      previous?.focus();
+    };
+  }, []);
+  return (
+    <div
+      className="modal-backdrop"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) close();
+      }}
+    >
+      <div
+        ref={ref}
+        className={`modal ${wide ? 'wide' : ''}`}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+      >
+        <div className="modal-heading">
+          <div>
+            {eyebrow && <span className="eyebrow">{eyebrow}</span>}
+            <h2>{title}</h2>
+          </div>
+          <button className="icon-button" onClick={close} aria-label="Close dialog">
+            <X size={20} />
+          </button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+export function App() {
+  const [session, setSession] = useState<Session | null>(() => {
+    try {
+      return JSON.parse(sessionStorage.getItem(SESSION_KEY) || 'null');
+    } catch {
+      return null;
+    }
+  });
+  const [room, setRoom] = useState<Room | null>(null);
+  const [config, setConfig] = useState<HostConfig | null>(null);
+  const [connection, setConnection] = useState<'connecting' | 'connected' | 'disconnected'>(
+    'connecting',
+  );
+  const [error, setError] = useState('');
+  const [toast, setToast] = useState('');
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    void api<HostConfig>('/api/config', null)
+      .then(setConfig)
+      .catch((e) => setError(e.message));
+  }, []);
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  useEffect(() => {
+    if (!toast) return;
+    const timer = setTimeout(() => setToast(''), 4000);
+    return () => clearTimeout(timer);
+  }, [toast]);
+  useEffect(() => {
+    if (!session) return;
+    let closed = false;
+    let socket: WebSocket | undefined;
+    let timer: ReturnType<typeof setTimeout>;
+    let retry = 0;
+    const connect = async () => {
+      setConnection('connecting');
+      try {
+        const state = await api<Room>('/api/room', session);
+        if (closed) return;
+        setRoom(state);
+      } catch (e) {
+        if (closed) return;
+        const message = (e as Error).message;
+        setError(message);
+        setConnection('disconnected');
+        if (/Join a room|room has ended/.test(message)) {
+          sessionStorage.removeItem(SESSION_KEY);
+          setSession(null);
+          setRoom(null);
+          return;
+        }
+        timer = setTimeout(connect, 3000);
+        return;
+      }
+      socket = new WebSocket(
+        `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws?token=${encodeURIComponent(session.token)}`,
+      );
+      socket.onopen = () => {
+        retry = 0;
+        setConnection('connected');
+      };
+      socket.onmessage = (event) => {
+        try {
+          const message = JSON.parse(event.data);
+          if (message.type === 'state') setRoom(message.room);
+        } catch {
+          /* A malformed event must not break reconnection. */
+        }
+      };
+      socket.onclose = () => {
+        if (closed) return;
+        setConnection('disconnected');
+        timer = setTimeout(connect, Math.min(1000 * 2 ** retry++, 10000));
+      };
+      socket.onerror = () => socket?.close();
+    };
+    void connect();
+    return () => {
+      closed = true;
+      clearTimeout(timer);
+      socket?.close();
+    };
+  }, [session]);
+  function enter(result: { session: Session; room: Room }) {
+    sessionStorage.setItem(SESSION_KEY, JSON.stringify(result.session));
+    setSession(result.session);
+    setRoom(result.room);
+    setError('');
+    history.replaceState({}, '', location.pathname);
+  }
+  function leave() {
+    sessionStorage.removeItem(SESSION_KEY);
+    setSession(null);
+    setRoom(null);
+    setError('');
+  }
+  async function action(url: string, data: unknown = {}) {
+    if (connection !== 'connected') {
+      setError('Reconnecting to the host. Try again once connected.');
+      return false;
+    }
+    try {
+      await api(url, session, data);
+      return true;
+    } catch (e) {
+      setError((e as Error).message);
+      return false;
+    }
+  }
+  return (
+    <>
+      {session && room ? (
+        <Workspace
+          room={room}
+          session={session}
+          config={config}
+          connection={connection}
+          now={now}
+          action={action}
+          leave={leave}
+          notify={setToast}
+          onError={setError}
+        />
+      ) : session ? (
+        <div className="loading-screen">
+          <Logo />
+          <Loader2 className="spin" />
+          Rejoining your room…<Button onClick={leave}>Back to lobby</Button>
+        </div>
+      ) : (
+        <Lobby config={config} enter={enter} onError={setError} />
+      )}
+      {error && (
+        <div className="toast error-toast" role="alert">
+          <CircleHelp size={19} />
+          <span>{error}</span>
+          <button className="icon-button" onClick={() => setError('')} aria-label="Dismiss error">
+            <X size={16} />
+          </button>
+        </div>
+      )}
+      {toast && (
+        <div className="toast" role="status">
+          <Check size={18} />
+          <span>{toast}</span>
+        </div>
+      )}
+    </>
+  );
+}
+
+function Lobby({
+  config,
+  enter,
+  onError,
+}: {
+  config: HostConfig | null;
+  enter: (r: { room: Room; session: Session }) => void;
+  onError: (s: string) => void;
+}) {
+  const inviteCode = new URLSearchParams(location.search).get('join') || '';
+  const [tab, setTab] = useState<'host' | 'join'>(inviteCode ? 'join' : 'host');
+  const [name, setName] = useState('');
+  const [roomName, setRoomName] = useState('The build room');
+  const [code, setCode] = useState(inviteCode);
+  const [busy, setBusy] = useState('');
+  async function create(mode: 'demo' | 'live') {
+    setBusy(mode);
+    try {
+      enter(
+        await api('/api/rooms', null, {
+          name: mode === 'demo' ? 'The weekend build' : roomName,
+          memberName: name.trim() || 'You',
+          mode,
+        }),
+      );
+    } catch (e) {
+      onError((e as Error).message);
+    } finally {
+      setBusy('');
+    }
+  }
+  async function join(e: FormEvent) {
+    e.preventDefault();
+    setBusy('join');
+    try {
+      enter(await api('/api/join', null, { code, memberName: name.trim() || 'You' }));
+    } catch (e) {
+      onError((e as Error).message);
+    } finally {
+      setBusy('');
+    }
+  }
+  return (
+    <div className="lobby">
+      <header className="lobby-nav">
+        <Logo />
+        <span className="pill">
+          <span className="dot" /> Made for building together
+        </span>
+        <a
+          href="https://github.com/EyedBread/multiplayer-agentic-coding"
+          target="_blank"
+          rel="noreferrer"
+        >
+          View project <ArrowUpRight size={16} />
+        </a>
+      </header>
+      <main className="lobby-main">
+        <div className="hero-copy">
+          <div className="eyebrow">
+            <span className="tiny-cross">✳</span> MORE MINDS. ONE WORKSPACE.
+          </div>
+          <h1>
+            Build in
+            <br />
+            <span>good company.</span>
+          </h1>
+          <p>
+            Your team. Your agents. All in one room.
+            <br />
+            See the work unfold, make the calls together,
+            <br className="desktop-break" /> and keep moving in the same direction.
+          </p>
+          <div className="hero-tags">
+            <span>
+              <Radio size={15} /> Live sessions
+            </span>
+            <span>
+              <Vote size={16} /> Team decisions
+            </span>
+            <span>
+              <GitCompareArrows size={16} /> Shared awareness
+            </span>
+          </div>
+          <div className="little-room" aria-label="An illustration of three collaborating agents">
+            <div className="orbit-label">
+              <span className="dot" /> BETTER, TOGETHER
+            </div>
+            <div className="mini-agents">
+              {['You + Codex', 'Mina + Codex', 'Jules + Codex'].map((n, i) => (
+                <div className={`mini-agent ${colors[i]}`} key={n}>
+                  <div className="mini-agent-top">
+                    <span className="mini-agent-icon">
+                      <Command size={20} />
+                    </span>
+                    <span className="dot" />
+                  </div>
+                  <strong>{n}</strong>
+                  <span>
+                    {['Shaping the interface', 'Connecting the pieces', 'Checking the details'][i]}
+                  </span>
+                  <div className="mini-code">
+                    <i />
+                    <i />
+                    <i />
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="mini-decision">
+              <Vote size={15} />
+              <span>One shared direction.</span>
+              <span className="mini-checks">
+                <Check size={13} />
+                <Check size={13} />
+                <Check size={13} />
+              </span>
+            </div>
+          </div>
+        </div>
+        <div className="lobby-form-wrap">
+          <div className="lobby-form">
+            <span className="eyebrow">PULL UP A CHAIR</span>
+            <h2>
+              Great things start
+              <br />
+              with a room.
+            </h2>
+            <div className="segmented">
+              <button className={tab === 'host' ? 'selected' : ''} onClick={() => setTab('host')}>
+                Host a room
+              </button>
+              <button className={tab === 'join' ? 'selected' : ''} onClick={() => setTab('join')}>
+                Join your team
+              </button>
+            </div>
+            <form
+              onSubmit={
+                tab === 'join'
+                  ? join
+                  : (e) => {
+                      e.preventDefault();
+                      void create('live');
+                    }
+              }
+            >
+              <label>
+                Your name
+                <input
+                  autoComplete="given-name"
+                  maxLength={32}
+                  placeholder="What should we call you?"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                />
+              </label>
+              {tab === 'host' ? (
+                <>
+                  <label>
+                    Room name
+                    <input
+                      maxLength={60}
+                      value={roomName}
+                      onChange={(e) => setRoomName(e.target.value)}
+                      required
+                    />
+                  </label>
+                  <div className="repo-target">
+                    <div>
+                      <GitBranch size={16} />
+                      <strong>{config?.repoName || 'Finding your project…'}</strong>
+                    </div>
+                    <span>{config?.branch || 'Local Git project'} · hosted on this computer</span>
+                  </div>
+                  {config?.dirty && (
+                    <p className="form-note">
+                      Commit or stash this project’s changes before starting a live room.
+                    </p>
+                  )}
+                  <Button
+                    type="submit"
+                    kind="primary"
+                    disabled={!!busy || !config?.canHost || !config?.codexAvailable}
+                    className="full"
+                  >
+                    {busy === 'live' ? <Loader2 className="spin" size={17} /> : <Plus size={17} />}
+                    Create live room
+                    <ArrowRight size={17} />
+                  </Button>
+                  {config && !config.canHost && (
+                    <p className="form-note">
+                      Open this page on the host computer to create a live room.
+                    </p>
+                  )}
+                  {config && !config.codexAvailable && (
+                    <p className="form-note">
+                      Install and sign in to Codex on the host to run live agents.
+                    </p>
+                  )}
+                  <div className="or-divider">
+                    <span />
+                    OR TAKE A LOOK AROUND
+                    <span />
+                  </div>
+                  <Button className="full" onClick={() => void create('demo')} disabled={!!busy}>
+                    {busy === 'demo' ? (
+                      <Loader2 className="spin" size={17} />
+                    ) : (
+                      <Sparkles size={17} />
+                    )}
+                    Explore a demo room
+                    <ArrowUpRight size={16} />
+                  </Button>
+                  <p className="form-note centered">
+                    Simulated agents. Real multiplayer. No setup.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <label>
+                    Room code
+                    <input
+                      className="code-input"
+                      maxLength={20}
+                      placeholder="Paste your room code"
+                      value={code}
+                      onChange={(e) => setCode(e.target.value)}
+                      required
+                    />
+                  </label>
+                  <p className="form-note">
+                    Use the link or code shared by your host. Everyone joins the same running
+                    server.
+                  </p>
+                  <Button type="submit" kind="primary" className="full" disabled={!!busy}>
+                    {busy ? <Loader2 className="spin" size={17} /> : <Users size={17} />}Join the
+                    room
+                    <ArrowRight size={17} />
+                  </Button>
+                </>
+              )}
+            </form>
+          </div>
+          <p className="lobby-footnote">
+            <ShieldCheck size={14} /> Your project stays on the host computer.
+          </p>
+        </div>
+      </main>
+      <footer className="lobby-footer">
+        <span>A little less silo. A lot more together.</span>
+        <span>
+          BUILT FOR THE WEEKEND. READY FOR THE TEAM. <span>↗</span>
+        </span>
+      </footer>
+    </div>
+  );
+}
+
+type Action = (url: string, data?: unknown) => Promise<boolean>;
+function Workspace({
+  room,
+  session,
+  config,
+  connection,
+  now,
+  action,
+  leave,
+  notify,
+  onError,
+}: {
+  room: Room;
+  session: Session;
+  config: HostConfig | null;
+  connection: string;
+  now: number;
+  action: Action;
+  leave: () => void;
+  notify: (s: string) => void;
+  onError: (s: string) => void;
+}) {
+  const [view, setView] = useState<'workspace' | 'changes' | 'decisions'>('workspace');
+  const [rail, setRail] = useState<'decisions' | 'activity'>('decisions');
+  const [modal, setModal] = useState<'invite' | 'agent' | 'decision' | null>(null);
+  const [focus, setFocus] = useState<string | null>(null);
+  const [diff, setDiff] = useState<{
+    file: string;
+    agents: { name: string; content: string }[];
+  } | null>(null);
+  const [diffLoading, setDiffLoading] = useState(false);
+  const [name, setName] = useState('');
+  const [task, setTask] = useState('');
+  const [question, setQuestion] = useState('');
+  const [choices, setChoices] = useState(['', '']);
+  const [busy, setBusy] = useState(false);
+  const me = room.members.find((m) => m.id === session.memberId)!;
+  const pending = room.decisions.filter(activeDecision);
+  const settled = room.decisions.filter((d) => d.scope === 'team' && d.status === 'resolved');
+  const changedCount = new Set(room.agents.flatMap((a) => a.files)).size;
+  const workingCount = room.agents.filter((a) => a.status === 'working').length;
+  const agents = focus ? room.agents.filter((a) => a.id === focus) : room.agents;
+  const enabled = connection === 'connected';
+  async function copyInvite() {
+    try {
+      await navigator.clipboard.writeText(`${location.origin}/?join=${room.code}`);
+      notify('Invite link copied');
+    } catch {
+      onError('Clipboard unavailable. Copy the link from the invite dialog.');
+      setModal('invite');
+    }
+  }
+  async function showDiff(file: string, ids: string[]) {
+    setDiffLoading(true);
+    setDiff({ file, agents: [] });
+    try {
+      const agents = await Promise.all(
+        ids.map(async (id) => ({
+          name: room.agents.find((a) => a.id === id)!.name,
+          content: (
+            await api<{ diff: string }>(
+              `/api/agents/${id}/diff?file=${encodeURIComponent(file)}`,
+              session,
+            )
+          ).diff,
+        })),
+      );
+      setDiff({ file, agents });
+    } catch (e) {
+      onError((e as Error).message);
+      setDiff(null);
+    } finally {
+      setDiffLoading(false);
+    }
+  }
+  async function submitAgent(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    if (await action('/api/agents', { name, task })) {
+      setModal(null);
+      setName('');
+      setTask('');
+    }
+    setBusy(false);
+  }
+  async function submitDecision(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    if (await action('/api/decisions', { question, options: choices.filter((c) => c.trim()) })) {
+      setModal(null);
+      setQuestion('');
+      setChoices(['', '']);
+      setRail('decisions');
+    }
+    setBusy(false);
+  }
+  return (
+    <div className="workspace-shell">
+      <header className="topbar">
+        <Logo small />
+        <div className="topbar-divider" />
+        <span className="repo-crumb">
+          <GitBranch size={15} />
+          {room.repoName}
+          <ChevronDown size={13} />
+        </span>
+        <span className={`mode-badge ${room.mode}`}>
+          {room.mode === 'demo' ? 'DEMO ROOM' : 'LIVE ROOM'}
+        </span>
+        <div className="topbar-right">
+          <div className="avatar-stack">
+            {room.members.slice(0, 4).map((m) => (
+              <Avatar key={m.id} name={m.name} color={m.color} small />
+            ))}
+          </div>
+          <span className="people-count">{room.members.filter((m) => m.online).length} online</span>
+          <Button onClick={() => setModal('invite')}>
+            <Users size={15} />
+            Invite teammates
+          </Button>
+          <button
+            className="icon-button exit"
+            title="Leave room"
+            aria-label="Leave room"
+            onClick={leave}
+          >
+            <LogOut size={17} />
+          </button>
+        </div>
+      </header>
+      <div className="workspace-body">
+        <nav className="side-nav" aria-label="Workspace navigation">
+          <button
+            aria-label="Workspace"
+            title="Workspace"
+            className={view === 'workspace' ? 'active' : ''}
+            onClick={() => setView('workspace')}
+          >
+            <LayoutGrid size={20} />
+          </button>
+          <button
+            aria-label="Changed files"
+            title="Changed files"
+            className={view === 'changes' ? 'active' : ''}
+            onClick={() => setView('changes')}
+          >
+            <GitCompareArrows size={21} />
+          </button>
+          <button
+            aria-label="Decision log"
+            title="Decision log"
+            className={view === 'decisions' ? 'active' : ''}
+            onClick={() => setView('decisions')}
+          >
+            <Vote size={21} />
+            {pending.length > 0 && <span className="nav-dot" />}
+          </button>
+          <div className="side-nav-spacer" />
+          <button aria-label="Room details" title="Room details" onClick={() => setModal('invite')}>
+            <CircleHelp size={20} />
+          </button>
+          <Avatar name={me.name} color={me.color} small />
+        </nav>
+        <div className="main-column">
+          <section className="room-heading">
+            <div>
+              <div className="eyebrow">
+                <span className={`dot ${enabled ? '' : 'amber'}`} />
+                {enabled ? 'YOUR TEAM’S SHARED WORKSPACE' : 'RECONNECTING TO THE HOST'}
+              </div>
+              <h1>
+                {room.name}
+                <span className="heading-star">✳</span>
+              </h1>
+              <p>
+                {room.mode === 'demo'
+                  ? 'A few agents, a shared goal, and everyone in the loop.'
+                  : 'Your agents are working together. You’ve got the whole picture.'}
+              </p>
+            </div>
+            <div className="heading-actions">
+              {room.mode === 'demo' && room.hostId === me.id && (
+                <Button
+                  onClick={() => {
+                    setRail('decisions');
+                    void action('/api/demo/scenario');
+                  }}
+                  disabled={!enabled || pending.some((d) => d.scope === 'team')}
+                >
+                  <Zap size={15} />
+                  Run team scenario
+                </Button>
+              )}
+              <Button
+                kind="primary"
+                onClick={() => setModal('agent')}
+                disabled={!enabled || room.agents.length >= 6}
+              >
+                <Plus size={17} />
+                Add agent
+              </Button>
+            </div>
+          </section>
+          <div className="session-strip">
+            <div>
+              <span className="status-symbol">
+                <Waves size={17} />
+              </span>
+              <strong>{room.agents.length} agents</strong>
+              <span className="muted">in the room</span>
+              <span className="strip-separator" />
+              <span className="dot muted-dot" />
+              {workingCount} working
+            </div>
+            <div>
+              <FileCode2 size={14} />
+              <span>{changedCount} files changed</span>
+              <span className="strip-separator" />
+              <GitBranch size={14} />
+              <span>{room.branch}</span>
+              <span className="strip-separator" />
+              <Clock3 size={14} />
+              <span>{Math.max(0, Math.floor((now - room.createdAt) / 60000))}m together</span>
+            </div>
+          </div>
+          {pending.length > 0 && (
+            <button
+              className="mobile-decision-alert"
+              onClick={() => {
+                setRail('decisions');
+                document.querySelector('.right-rail')?.scrollIntoView({ behavior: 'smooth' });
+              }}
+            >
+              <Vote size={16} />
+              <span>
+                {pending.length} {pending.length === 1 ? 'decision needs' : 'decisions need'}{' '}
+                attention
+              </span>
+              <ArrowDown size={15} />
+            </button>
+          )}
+          <div className="content-with-rail">
+            <main className="workspace-main">
+              <div className="section-bar">
+                <div className="view-tabs">
+                  <button
+                    className={view === 'workspace' ? 'active' : ''}
+                    onClick={() => setView('workspace')}
+                  >
+                    <LayoutGrid size={15} />
+                    Sessions<span>{room.agents.length}</span>
+                  </button>
+                  <button
+                    className={view === 'changes' ? 'active' : ''}
+                    onClick={() => setView('changes')}
+                  >
+                    Changes<span>{changedCount}</span>
+                  </button>
+                  <button
+                    className={view === 'decisions' ? 'active' : ''}
+                    onClick={() => setView('decisions')}
+                  >
+                    Decision log<span>{settled.length}</span>
+                  </button>
+                </div>
+                {focus && (
+                  <Button kind="ghost" onClick={() => setFocus(null)}>
+                    Show all
+                    <LayoutGrid size={14} />
+                  </Button>
+                )}
+              </div>
+              {room.overlaps.length > 0 && (
+                <div className="overlap-banner">
+                  <span className="overlap-icon">
+                    <GitCompareArrows size={19} />
+                  </span>
+                  <div>
+                    <strong>A little overlap. A good time to sync.</strong>
+                    <p>
+                      {room.overlaps.length} shared{' '}
+                      {room.overlaps.length === 1 ? 'file has' : 'files have'} changes from multiple
+                      agents.
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => void showDiff(room.overlaps[0].path, room.overlaps[0].agentIds)}
+                  >
+                    Compare changes <ArrowUpRight size={15} />
+                  </button>
+                </div>
+              )}
+              {view === 'workspace' && (
+                <>
+                  <div className={`agent-grid ${focus ? 'focused' : ''}`}>
+                    {agents.map((agent) => (
+                      <AgentCard
+                        key={agent.id}
+                        agent={agent}
+                        room={room}
+                        session={session}
+                        enabled={enabled}
+                        action={action}
+                        onFocus={() => setFocus(focus === agent.id ? null : agent.id)}
+                        onFile={(file) => void showDiff(file, [agent.id])}
+                        onQuestion={() => {
+                          setRail('decisions');
+                          document
+                            .querySelector('.right-rail')
+                            ?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                        }}
+                      />
+                    ))}
+                    {!focus && room.agents.length < 6 && (
+                      <button
+                        className="add-agent-card"
+                        onClick={() => setModal('agent')}
+                        disabled={!enabled}
+                      >
+                        <span className="add-agent-art">
+                          <span className="dashed-orbit" />
+                          <Plus size={24} />
+                        </span>
+                        <strong>Room for another mind.</strong>
+                        <span>
+                          Give an agent a task.
+                          <br />
+                          Keep the whole team in the loop.
+                        </span>
+                        <span className="add-agent-link">
+                          Add an agent <ArrowUpRight size={15} />
+                        </span>
+                      </button>
+                    )}
+                  </div>
+                  <div className="workspace-caption">
+                    <span>
+                      <ShieldCheck size={14} />
+                      {room.mode === 'demo'
+                        ? 'Demo agents are simulated. No project files are changed.'
+                        : 'Each agent works in its own Git worktree.'}
+                    </span>
+                    <span>FOCUS TO BUILD. ZOOM OUT TO CONNECT.</span>
+                  </div>
+                </>
+              )}
+              {view === 'changes' && (
+                <div className="changes-view">
+                  <div className="view-intro">
+                    <h2>The work, side by side.</h2>
+                    <p>
+                      File overlap is a signal to coordinate. It doesn’t always mean a conflict.
+                    </p>
+                  </div>
+                  {changedCount === 0 && (
+                    <Empty
+                      icon={<FileCode2 />}
+                      title="A clean slate."
+                      text="Changed files will appear here as your agents work."
+                    />
+                  )}
+                  {[...new Set(room.agents.flatMap((a) => a.files))].sort().map((file) => {
+                    const owners = room.agents.filter((a) => a.files.includes(file));
+                    return (
+                      <button
+                        className="change-row"
+                        key={file}
+                        onClick={() =>
+                          void showDiff(
+                            file,
+                            owners.map((a) => a.id),
+                          )
+                        }
+                      >
+                        <FileCode2 size={17} />
+                        <code>{file}</code>
+                        <div>
+                          {owners.map((a) => (
+                            <span className={`agent-chip ${colors[a.color]}`} key={a.id}>
+                              {a.name}
+                            </span>
+                          ))}
+                        </div>
+                        {owners.length > 1 && <span className="overlap-tag">Overlap</span>}
+                        <ChevronRight size={16} />
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+              {view === 'decisions' && (
+                <div className="decision-log">
+                  <div className="view-intro">
+                    <h2>One shared direction.</h2>
+                    <p>
+                      Settled team decisions are sent to active agents and included in future
+                      prompts.
+                    </p>
+                  </div>
+                  {settled.length === 0 ? (
+                    <Empty
+                      icon={<Vote />}
+                      title="The next call is yours."
+                      text="Start a team vote. Agreed decisions will be collected here."
+                    />
+                  ) : (
+                    settled.map((d, i) => (
+                      <div className="log-entry" key={d.id}>
+                        <span className="log-number">
+                          {String(settled.length - i).padStart(2, '0')}
+                        </span>
+                        <div>
+                          <span className="eyebrow">
+                            TEAM DECISION · {formatTime(d.resolvedAt!)}
+                          </span>
+                          <h3>{d.question}</h3>
+                          <p>
+                            <CheckCheck size={17} />
+                            {d.answer}
+                          </p>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
+            </main>
+            <aside className="right-rail">
+              <div className="rail-tabs">
+                <button
+                  className={rail === 'decisions' ? 'active' : ''}
+                  onClick={() => setRail('decisions')}
+                >
+                  Team decisions{pending.length > 0 && <span>{pending.length}</span>}
+                </button>
+                <button
+                  className={rail === 'activity' ? 'active' : ''}
+                  onClick={() => setRail('activity')}
+                >
+                  Activity
+                </button>
+              </div>
+              {rail === 'decisions' ? (
+                <>
+                  <div className="rail-intro">
+                    <span>Better calls, together.</span>
+                    <button
+                      className="icon-button"
+                      aria-label="Start a team vote"
+                      onClick={() => setModal('decision')}
+                      disabled={!enabled}
+                    >
+                      <Plus size={17} />
+                    </button>
+                  </div>
+                  {pending.length === 0 ? (
+                    <div className="no-decisions">
+                      <div className="decision-art">
+                        <MessageSquare size={27} />
+                        <span>
+                          <Check size={14} />
+                        </span>
+                      </div>
+                      <h3>On the same page.</h3>
+                      <p>
+                        No decisions waiting. When something needs a team call, it lands right here.
+                      </p>
+                      <Button onClick={() => setModal('decision')} disabled={!enabled}>
+                        <Plus size={15} />
+                        Start a team vote
+                      </Button>
+                    </div>
+                  ) : (
+                    pending.map((d) => (
+                      <DecisionCard
+                        key={d.id}
+                        decision={d}
+                        room={room}
+                        me={me.id}
+                        now={now}
+                        action={action}
+                        enabled={enabled}
+                      />
+                    ))
+                  )}
+                  {settled.length > 0 && (
+                    <div className="recent-decisions">
+                      <span className="eyebrow">RECENTLY SETTLED</span>
+                      {settled.slice(0, 3).map((d) => (
+                        <button key={d.id} onClick={() => setView('decisions')}>
+                          <CheckCheck size={16} />
+                          <span>
+                            {d.answer}
+                            <small>{formatTime(d.resolvedAt!)}</small>
+                          </span>
+                          <ChevronRight size={14} />
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  <div className="vote-explainer">
+                    <Clock3 size={16} />
+                    <div>
+                      <strong>Small pause. Shared progress.</strong>
+                      <p>
+                        Team votes last 30 seconds. Ties go to the owner. Other agents keep moving.
+                      </p>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div className="activity-list">
+                  {room.activity.map((a) => (
+                    <div className={`activity-item ${a.kind}`} key={a.id}>
+                      <span className="activity-dot" />
+                      <div>
+                        <p>{a.text}</p>
+                        <time>{formatTime(a.at)}</time>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="room-bottom">
+                <span className="eyebrow">IN THE ROOM</span>
+                {room.members.map((m) => (
+                  <div className="member-row" key={m.id}>
+                    <Avatar name={m.name} color={m.color} small />
+                    <span>
+                      {m.name}
+                      {m.id === me.id && <small> (you)</small>}
+                    </span>
+                    {m.id === room.hostId && <span className="host-label">HOST</span>}
+                    <span
+                      className={`dot ${m.online ? '' : 'muted-dot'}`}
+                      title={m.online ? 'Online' : 'Offline'}
+                    />
+                  </div>
+                ))}
+                <button className="invite-text" onClick={() => setModal('invite')}>
+                  <Plus size={14} />
+                  There’s room for your team
+                </button>
+              </div>
+            </aside>
+          </div>
+        </div>
+      </div>
+      <footer className="statusbar">
+        <span>
+          <span className={`dot ${enabled ? '' : 'amber'}`} />
+          {enabled ? 'Connected to host' : 'Connection lost · reconnecting…'}
+        </span>
+        <span>
+          {room.mode === 'demo' ? 'SIMULATED AGENTS' : 'CODEX APP SERVER'}
+          <span className="statusbar-divider">/</span>ROOM {room.code}
+          <span className="statusbar-divider">/</span>
+          <span>
+            BUILT TOGETHER <span className="lime-text">✳</span>
+          </span>
+        </span>
+      </footer>
+      {modal === 'invite' && (
+        <Modal
+          title="Good company, one link away."
+          eyebrow="INVITE YOUR TEAM"
+          close={() => setModal(null)}
+        >
+          <p className="modal-description">
+            Anyone with this invite can join the room, see agent sessions, and vote on team
+            decisions.
+          </p>
+          <label>
+            Room invite
+            <div className="copy-field">
+              <input
+                readOnly
+                value={`${location.origin}/?join=${room.code}`}
+                onFocus={(e) => e.target.select()}
+              />
+              <button onClick={() => void copyInvite()} aria-label="Copy invite link">
+                <Copy size={18} />
+              </button>
+            </div>
+          </label>
+          <div className="invite-code">
+            <span className="eyebrow">OR SHARE THE ROOM CODE</span>
+            <strong>
+              {room.code.slice(0, 5)}
+              <span> </span>
+              {room.code.slice(5)}
+            </strong>
+          </div>
+          {['localhost', '127.0.0.1', '[::1]'].includes(location.hostname) && (
+            <div className="info-note">
+              <Globe2 size={18} />
+              <p>
+                This is a local link. For teammates on another computer, start the host with{' '}
+                <code>HOST=0.0.0.0 npm run dev</code> and share its LAN address. Everyone must be
+                able to reach this server.
+              </p>
+            </div>
+          )}
+          <div className="modal-meta">
+            <GitBranch size={15} />
+            {room.repoName}
+            <span>{room.mode === 'demo' ? 'Demo project' : config?.repoPath}</span>
+          </div>
+        </Modal>
+      )}
+      {modal === 'agent' && (
+        <Modal
+          title="Another mind in the room."
+          eyebrow="ADD AN AGENT"
+          close={() => {
+            if (!busy) setModal(null);
+          }}
+        >
+          <p className="modal-description">
+            Give this agent a clear responsibility. You’ll drive its session, and your team can
+            follow along.
+          </p>
+          <form onSubmit={submitAgent}>
+            <label>
+              Agent name
+              <input
+                placeholder="e.g. Interface"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                maxLength={32}
+                required
+              />
+            </label>
+            <label>
+              What will it work on?
+              <textarea
+                placeholder="e.g. Build the shared planning board and its interactions"
+                value={task}
+                onChange={(e) => setTask(e.target.value)}
+                maxLength={300}
+                rows={3}
+                required
+              />
+            </label>
+            <div className="info-note">
+              <GitBranch size={18} />
+              <p>
+                {room.mode === 'demo'
+                  ? 'This will add a simulated agent to your demo room.'
+                  : 'We’ll create a Git worktree from the latest commit and connect a Codex session. Send a prompt when you’re ready to start.'}
+              </p>
+            </div>
+            <Button className="full" type="submit" kind="primary" disabled={busy}>
+              {busy ? <Loader2 size={17} className="spin" /> : <Plus size={17} />}
+              {busy ? 'Preparing the workspace…' : 'Add agent'}
+            </Button>
+          </form>
+        </Modal>
+      )}
+      {modal === 'decision' && (
+        <Modal
+          title="Make the call together."
+          eyebrow="START A TEAM VOTE"
+          close={() => setModal(null)}
+        >
+          <p className="modal-description">
+            Ask one clear question. Your team has 30 seconds to vote, and the result is shared with
+            every agent.
+          </p>
+          <form onSubmit={submitDecision}>
+            <label>
+              The decision
+              <textarea
+                placeholder="What should the team agree on?"
+                rows={2}
+                maxLength={500}
+                value={question}
+                onChange={(e) => setQuestion(e.target.value)}
+                required
+              />
+            </label>
+            {choices.map((choice, i) => (
+              <label key={i}>
+                Option {String.fromCharCode(65 + i)}
+                <input
+                  placeholder={i === 0 ? 'One direction…' : 'Another direction…'}
+                  value={choice}
+                  onChange={(e) =>
+                    setChoices(choices.map((c, j) => (i === j ? e.target.value : c)))
+                  }
+                  maxLength={300}
+                  required={i < 2}
+                />
+              </label>
+            ))}
+            {choices.length < 4 && (
+              <Button kind="ghost" onClick={() => setChoices([...choices, ''])}>
+                <Plus size={14} />
+                Add another option
+              </Button>
+            )}
+            <Button kind="primary" className="full" type="submit" disabled={busy}>
+              {busy ? <Loader2 className="spin" size={17} /> : <Vote size={17} />}Open the vote
+            </Button>
+          </form>
+        </Modal>
+      )}
+      {diff && (
+        <Modal
+          wide
+          title={diff.file}
+          eyebrow={diff.agents.length > 1 ? 'COMPARE AGENT CHANGES' : 'FILE CHANGES'}
+          close={() => setDiff(null)}
+        >
+          {diffLoading ? (
+            <div className="loading-diff">
+              <Loader2 className="spin" />
+              Loading changes…
+            </div>
+          ) : (
+            <>
+              <p className="modal-description">
+                {room.mode === 'demo'
+                  ? 'Simulated changes for this demo.'
+                  : 'Each diff compares the agent’s worktree with its starting commit.'}{' '}
+                {diff.agents.length > 1 &&
+                  'Review both versions before deciding how to combine them.'}
+              </p>
+              <div className="diff-columns">
+                {diff.agents.map((a) => (
+                  <div className="diff-panel" key={a.name}>
+                    <header>
+                      <GitBranch size={15} />
+                      {a.name}
+                    </header>
+                    <pre>
+                      {a.content.split('\n').map((line, i) => (
+                        <span
+                          className={
+                            line.startsWith('+')
+                              ? 'diff-add'
+                              : line.startsWith('-')
+                                ? 'diff-remove'
+                                : line.startsWith('@@')
+                                  ? 'diff-range'
+                                  : ''
+                          }
+                          key={i}
+                        >
+                          {line || ' '}
+                          <br />
+                        </span>
+                      ))}
+                    </pre>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function Empty({ icon, title, text }: { icon: ReactNode; title: string; text: string }) {
+  return (
+    <div className="empty-state">
+      {icon}
+      <h3>{title}</h3>
+      <p>{text}</p>
+    </div>
+  );
+}
+
+function AgentCard({
+  agent,
+  room,
+  session,
+  enabled,
+  action,
+  onFocus,
+  onFile,
+  onQuestion,
+}: {
+  agent: Agent;
+  room: Room;
+  session: Session;
+  enabled: boolean;
+  action: Action;
+  onFocus: () => void;
+  onFile: (file: string) => void;
+  onQuestion: () => void;
+}) {
+  const [prompt, setPrompt] = useState('');
+  const [tab, setTab] = useState<'session' | 'files'>('session');
+  const [busy, setBusy] = useState(false);
+  const [follow, setFollow] = useState(true);
+  const scroll = useRef<HTMLDivElement>(null);
+  const owner = room.members.find((m) => m.id === agent.ownerId);
+  const canControl = session.memberId === agent.ownerId || session.memberId === room.hostId;
+  const canPrompt = agent.status === 'idle' || (agent.status === 'error' && !agent.error);
+  const waiting = room.decisions.some((d) => d.agentId === agent.id && activeDecision(d));
+  useEffect(() => {
+    if (follow && scroll.current) scroll.current.scrollTop = scroll.current.scrollHeight;
+  }, [agent.entries, follow]);
+  async function send(e: FormEvent) {
+    e.preventDefault();
+    if (!prompt.trim()) return;
+    setBusy(true);
+    if (await action(`/api/agents/${agent.id}/prompt`, { prompt })) {
+      setPrompt('');
+      setFollow(true);
+    }
+    setBusy(false);
+  }
+  return (
+    <article className={`agent-card ${colors[agent.color]}`}>
+      <header className="agent-header">
+        <span className="agent-glyph">
+          <Command size={20} />
+        </span>
+        <div className="agent-title">
+          <h2>
+            {agent.name}
+            <span>Codex</span>
+          </h2>
+          <p>
+            {room.mode === 'demo' ? 'Demo session' : owner?.name || 'Teammate'}
+            <span>·</span>
+            {agent.branch}
+          </p>
+        </div>
+        <button
+          className="icon-button"
+          title="Focus session"
+          aria-label={`Focus ${agent.name} session`}
+          onClick={onFocus}
+        >
+          <ArrowUpRight size={17} />
+        </button>
+      </header>
+      <div className="agent-task">
+        <span className={`agent-status ${agent.status}`}>
+          <span className="dot" />
+          {
+            {
+              idle: 'Ready',
+              working: 'Working',
+              waiting: 'Needs input',
+              starting: 'Connecting',
+              error: 'Error',
+            }[agent.status]
+          }
+        </span>
+        <span title={agent.task}>{agent.task}</span>
+      </div>
+      <div className="agent-tabs">
+        <button className={tab === 'session' ? 'active' : ''} onClick={() => setTab('session')}>
+          <Terminal size={13} />
+          Session
+        </button>
+        <button className={tab === 'files' ? 'active' : ''} onClick={() => setTab('files')}>
+          <FileCode2 size={13} />
+          Files<span>{agent.files.length}</span>
+        </button>
+        <span className="agent-tabs-end">{room.mode === 'demo' ? 'SIMULATED' : 'LIVE'}</span>
+      </div>
+      {tab === 'session' ? (
+        <div
+          className="agent-transcript"
+          ref={scroll}
+          onScroll={() => {
+            const el = scroll.current;
+            if (el) setFollow(el.scrollHeight - el.scrollTop - el.clientHeight < 60);
+          }}
+        >
+          {agent.entries.length === 0 && (
+            <div className="agent-welcome">
+              <Sparkles size={25} />
+              <h3>Ready when you are.</h3>
+              <p>
+                Send the first prompt below.
+                <br />
+                Your team can follow along.
+              </p>
+            </div>
+          )}
+          {agent.entries.map((item) => (
+            <div className={`entry ${item.kind}`} key={item.id}>
+              {item.kind === 'user' ? (
+                <>
+                  <span className="entry-label">PROMPT</span>
+                  <p>{item.text}</p>
+                </>
+              ) : item.kind === 'command' ? (
+                <details>
+                  <summary>
+                    <Terminal size={13} />
+                    <span>{item.text.split('\n')[0]}</span>
+                    <ChevronRight size={12} />
+                  </summary>
+                  {item.text.includes('\n') && (
+                    <pre>{item.text.slice(item.text.indexOf('\n') + 1)}</pre>
+                  )}
+                </details>
+              ) : item.kind === 'system' ? (
+                <p>
+                  <CheckCheck size={13} />
+                  <span>{item.text}</span>
+                </p>
+              ) : (
+                <>
+                  <span className="entry-label">
+                    {item.kind === 'error' ? (
+                      'SOMETHING NEEDS ATTENTION'
+                    ) : (
+                      <>
+                        <span className="codex-tiny">✳</span> CODEX
+                      </>
+                    )}
+                  </span>
+                  <p>{item.text}</p>
+                </>
+              )}
+            </div>
+          ))}
+          {agent.status === 'working' && (
+            <div className="thinking">
+              <span />
+              <span />
+              <span />
+              <small>Working on it</small>
+            </div>
+          )}
+          {waiting && (
+            <button className="waiting-callout" onClick={onQuestion}>
+              <Vote size={16} />
+              <span>A decision is waiting for you</span>
+              <ArrowUpRight size={15} />
+            </button>
+          )}
+        </div>
+      ) : (
+        <div className="agent-files">
+          {!agent.files.length && (
+            <Empty
+              icon={<FileCode2 size={22} />}
+              title="No changes yet."
+              text="Files will appear as this agent works."
+            />
+          )}
+          {agent.files.map((file) => (
+            <button key={file} onClick={() => onFile(file)}>
+              <FileCode2 size={14} />
+              <span>{file}</span>
+              {room.overlaps.some((o) => o.path === file) ? (
+                <GitCompareArrows size={14} className="overlap-file" />
+              ) : (
+                <span className="file-modified">M</span>
+              )}
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="agent-input-wrap">
+        <form className="agent-input" onSubmit={send}>
+          <input
+            aria-label={`Message ${agent.name}`}
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            placeholder={
+              !canControl
+                ? `${owner?.name} is driving this session`
+                : agent.status === 'waiting'
+                  ? 'Waiting for a decision…'
+                  : 'Give your agent a direction…'
+            }
+            disabled={!enabled || !canControl || !canPrompt || busy}
+            maxLength={12000}
+          />
+          <button
+            type="submit"
+            aria-label={`Send message to ${agent.name}`}
+            disabled={!enabled || !canControl || !canPrompt || !prompt.trim() || busy}
+          >
+            {busy ? <Loader2 size={16} className="spin" /> : <ArrowUp size={17} />}
+          </button>
+        </form>
+        <div className="agent-footer">
+          <span>
+            <GitBranch size={12} />
+            {room.mode === 'demo' ? 'Demo worktree' : 'Isolated worktree'}
+          </span>
+          {canControl && ['working', 'waiting'].includes(agent.status) ? (
+            <button onClick={() => void action(`/api/agents/${agent.id}/stop`)} disabled={!enabled}>
+              <Square size={10} />
+              Stop
+            </button>
+          ) : (
+            <span title="Version of shared decisions delivered to this agent">
+              {agent.contextVersion >= room.decisionVersion ? (
+                <CheckCheck size={12} />
+              ) : (
+                <Clock3 size={12} />
+              )}
+              {agent.contextVersion >= room.decisionVersion ? 'Up to date' : 'Decision queued'}
+            </span>
+          )}
+        </div>
+      </div>
+    </article>
+  );
+}
+
+function DecisionCard({
+  decision: d,
+  room,
+  me,
+  now,
+  action,
+  enabled,
+}: {
+  decision: Decision;
+  room: Room;
+  me: string;
+  now: number;
+  action: Action;
+  enabled: boolean;
+}) {
+  const [answer, setAnswer] = useState('');
+  const seconds = Math.min(30, Math.max(0, Math.ceil(((d.closesAt ?? now) - now) / 1000)));
+  const canResolve =
+    [d.ownerId, room.hostId].includes(me) && (d.scope !== 'team' || d.status === 'owner-needed');
+  const canVote =
+    d.scope === 'team' && d.status === 'open' && seconds > 0 && d.eligible.includes(me);
+  const agent = room.agents.find((a) => a.id === d.agentId);
+  const voteCount = Object.keys(d.votes).length;
+  return (
+    <div className={`decision-card ${d.scope}`}>
+      <div className="decision-top">
+        <span>
+          <span className="dot" />
+          {d.scope === 'team'
+            ? 'TEAM VOTE'
+            : d.scope === 'approval'
+              ? 'HOST APPROVAL'
+              : 'OWNER QUESTION'}
+        </span>
+        {d.scope === 'team' && (
+          <span className="countdown">
+            <Clock3 size={12} />
+            {d.status === 'owner-needed' ? 'Owner’s call' : `${seconds}s`}
+          </span>
+        )}
+      </div>
+      <h3>{d.question}</h3>
+      {d.detail && <p className="decision-detail">{d.detail}</p>}
+      {agent && (
+        <div className="decision-source">
+          <span className={`source-dot ${colors[agent.color]}`} />
+          {agent.name} is waiting
+        </div>
+      )}
+      <div className="vote-options">
+        {d.options.map((option, index) => {
+          const count = Object.values(d.votes).filter((v) => v === index).length;
+          return (
+            <button
+              key={option}
+              className={d.votes[me] === index ? 'voted' : ''}
+              disabled={!enabled || (!canVote && !canResolve)}
+              onClick={() =>
+                void action(
+                  `/api/decisions/${d.id}/${canVote ? 'vote' : 'resolve'}`,
+                  canVote ? { option: index } : { answer: option },
+                )
+              }
+            >
+              <span className="option-letter">{String.fromCharCode(65 + index)}</span>
+              <span>{option}</span>
+              {d.scope === 'team' && (
+                <span className="option-count">
+                  {count}
+                  {d.votes[me] === index && <Check size={12} />}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+      {d.options.length === 0 && canResolve && (
+        <form
+          className="answer-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void action(`/api/decisions/${d.id}/resolve`, { answer });
+          }}
+        >
+          <input
+            aria-label="Your answer"
+            placeholder="Your answer…"
+            value={answer}
+            onChange={(e) => setAnswer(e.target.value)}
+            required
+          />
+          <button
+            className="icon-button"
+            type="submit"
+            aria-label="Send answer"
+            disabled={!enabled}
+          >
+            <Send size={16} />
+          </button>
+        </form>
+      )}
+      {d.scope === 'team' && (
+        <>
+          <div className="vote-progress">
+            <span style={{ width: `${Math.min(100, ((30 - seconds) / 30) * 100)}%` }} />
+          </div>
+          <div className="vote-footer">
+            <span>
+              {voteCount} / {d.eligible.length} voted
+            </span>
+            <span>
+              {d.status === 'owner-needed'
+                ? 'Choose an answer to continue'
+                : d.votes[me] !== undefined
+                  ? 'Your vote is in ✓'
+                  : canVote
+                    ? 'Your voice counts'
+                    : 'Watching this vote'}
+            </span>
+          </div>
+        </>
+      )}
+      {d.scope === 'owner' && d.options.length >= 2 && (
+        <button
+          className="promote-button"
+          disabled={!enabled}
+          onClick={() => void action(`/api/decisions/${d.id}/promote`)}
+        >
+          <Users size={13} />
+          Ask the whole team
+          <ArrowUpRight size={13} />
+        </button>
+      )}
+      {d.scope === 'approval' && (
+        <p className="approval-note">
+          <ShieldCheck size={12} />
+          The host must explicitly approve this action.
+        </p>
+      )}
+    </div>
+  );
+}

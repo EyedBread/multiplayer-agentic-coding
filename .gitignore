@@ -17,3 +17,6 @@ __pycache__/
 *.log
 .DS_Store
 Thumbs.db
+
+# Local collaboration sessions and isolated worktrees
+.multiplayer/
