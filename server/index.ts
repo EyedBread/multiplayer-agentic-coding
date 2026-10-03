@@ -27,10 +27,16 @@ import { changedFiles, createWorktree, fileDiff, repoInfo, git } from './git.js'
 import { codexInvocation, CodexClient } from './codex.js';
 import { RemoteHarnessClient, RunnerRegistry } from './runners.js';
 import { demoDiff, runDemoScenario, seedDemo } from './demo.js';
+import { ProjectRegistry } from './projects.js';
 
 const exec = promisify(execFile);
 const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const repoPath = path.resolve(process.env.HOST_REPO_PATH || appRoot);
+const projects = new ProjectRegistry(
+  repoPath,
+  path.resolve(process.env.MULTIPLAYER_STATE_DIR || path.join(appRoot, '.multiplayer')),
+);
+await projects.load();
 const rooms = new Map<string, Room>();
 const sessions = new Map<string, Session>();
 const clients = new Map<string, Set<WebSocket>>();
@@ -475,7 +481,17 @@ app.get('/api/config', async (req, res) => {
     dirty: info.dirty,
     codexAvailable,
     canHost: true,
+    canManageProjects: local(req.socket.remoteAddress),
+    projects: await projects.list(local(req.socket.remoteAddress)),
   });
+});
+app.post('/api/projects', async (req, res) => {
+  if (!local(req.socket.remoteAddress))
+    return res
+      .status(403)
+      .json({ error: 'Add project folders from the host computer at localhost.' });
+  const id = await projects.add(req.body.path);
+  res.json({ id, projects: await projects.list(true) });
 });
 app.post('/api/rooms', async (req, res) => {
   const mode = req.body.mode === 'live' ? 'live' : 'demo';
@@ -483,9 +499,11 @@ app.post('/api/rooms', async (req, res) => {
     throw new Error(
       'This host has reached its room limit. Restart the server to clear inactive rooms.',
     );
+  const projectId = req.body.projectId ?? 'default';
+  const selectedPath = mode === 'live' ? projects.resolve(projectId) : '';
   const info =
     mode === 'live'
-      ? await repoInfo(repoPath)
+      ? await repoInfo(selectedPath)
       : { name: 'weekend-planner', branch: 'main', dirty: false };
   if (mode === 'live' && info.dirty)
     throw new Error(
@@ -499,14 +517,15 @@ app.post('/api/rooms', async (req, res) => {
     info.branch,
   );
   if (mode === 'live') {
-    const remote = await git(repoPath, 'remote', 'get-url', 'origin').then(
+    room.projectId = projectId;
+    const remote = await git(selectedPath, 'remote', 'get-url', 'origin').then(
       repositoryRemote,
       () => null,
     );
     room.project = {
       remoteUrl: remote?.remoteUrl ?? null,
       identity: remote?.identity ?? null,
-      baseCommit: (await git(repoPath, 'rev-parse', 'HEAD')).trim(),
+      baseCommit: (await git(selectedPath, 'rev-parse', 'HEAD')).trim(),
     };
   }
   if (mode === 'demo') seedDemo(room);
@@ -571,11 +590,12 @@ app.post('/api/agents', async (req, res) => {
   try {
     if (room.mode === 'live') {
       const worktree = await createWorktree(
-        repoPath,
+        projects.resolve(room.projectId ?? 'default'),
         room.id,
         agent.id,
         agent.branch,
         room.project?.baseCommit,
+        projects.worktreeRoot(room.projectId ?? 'default'),
       );
       const runtime: Runtime = { ...worktree };
       runtimes.set(agent.id, runtime);

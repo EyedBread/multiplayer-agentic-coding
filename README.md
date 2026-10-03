@@ -25,13 +25,17 @@ An existing Codex login is reused. Model usage follows the host’s Codex accoun
 
 ### Host your own project
 
+On the server computer, open **http://127.0.0.1:3000**, choose **Create a room → Add project**, and enter the absolute path to an existing Git checkout (for example `/Users/you/projects/my-app`). Select it in the **Project** dropdown before creating the room. Added projects are saved across server restarts. Teammates can use **Refresh projects** and create rooms from any registered project; only the server computer can register new folders. Different rooms can use different repositories at the same time.
+
+You can also set the default project when starting the server:
+
 ```sh
 HOST_REPO_PATH=/absolute/path/to/your/repo npm run dev
 ```
 
 The target must be a Git repository with an initial commit and a clean working tree. Commit or stash changes before creating a live room. Each room pins the current commit. Every host or local agent starts from that same commit; uncommitted changes are not copied. Push the starting commit if teammates need to fetch it from GitHub or GitLab.
 
-Add `.multiplayer/` to that repository’s `.gitignore` before hosting. Agent worktrees are created under `.multiplayer/worktrees/<room>/<agent>` on `codex/<room>-<agent>` branches. The app does not automatically commit, merge, push, or delete them.
+Add `.multiplayer/` to the default repository’s `.gitignore` before hosting. Its agent worktrees are created under `.multiplayer/worktrees/<room>/<agent>`. Projects added through the picker store hosted worktrees in the app’s `.multiplayer/worktrees/<room>/<agent>` instead, so the selected checkout stays clean. Agent branches are named `codex/<room>-<agent>`. The app does not automatically commit, merge, push, or delete them. Local runners continue to create worktrees in their own checkout.
 
 ### Invite teammates on the same network
 
@@ -39,9 +43,9 @@ Add `.multiplayer/` to that repository’s `.gitignore` before hosting. Agent wo
 HOST=0.0.0.0 HOST_REPO_PATH=/absolute/path/to/your/repo npm run dev
 ```
 
-Open the app using the server computer’s LAN address (for example `http://192.168.1.10:3000`). Any teammate who can reach the server can create a room using the configured Git project, or join an existing room with its code. Share the LAN address and room code. A `localhost` invite works only on the server computer itself. Keep the server running while the team works.
+Open the app using the server computer’s LAN address (for example `http://192.168.1.10:3000`). Any teammate who can reach the server can create a room using a registered Git project, or join an existing room with its code. Share the LAN address and room code. A `localhost` invite works only on the server computer itself. Keep the server running while the team works.
 
-This MVP is for trusted teams on a local network. Invite codes grant room access. Each member receives a separate session token, and the server enforces ownership for agent controls. The room creator handles approvals for agents executing on the server. **Local agents accept prompts, stops, and permission approvals only from their owner**, including when the room host is another person. All rooms use the configured project, but local runners use their own machine’s harness credentials. Internet hosting needs HTTPS, account authentication, and stronger process isolation.
+This MVP is for trusted teams on a local network. Invite codes grant room access. Each member receives a separate session token, and the server enforces ownership for agent controls. The room creator handles approvals for agents executing on the server. **Local agents accept prompts, stops, and permission approvals only from their owner**, including when the room host is another person. Each room pins its selected repository and commit, while local runners use their own machine’s harness credentials. Internet hosting needs HTTPS, account authentication, and stronger process isolation.
 
 ### Connect Codex or Claude on your own computer
 
@@ -115,15 +119,16 @@ To check the decision UI with a real harness, ask: **“Give me a mock decision 
 | `npm start`                | Serve the production build and host API                   |
 | `npm run format`           | Format application source and documentation               |
 
-| Environment variable | Default                                   | Purpose                                                     |
-| -------------------- | ----------------------------------------- | ----------------------------------------------------------- |
-| `HOST`               | `127.0.0.1`                               | Address to bind; `0.0.0.0` enables LAN access               |
-| `PORT`               | `3000`                                    | HTTP and WebSocket port                                     |
-| `HOST_REPO_PATH`     | This repository                           | Git project to host                                         |
-| `CODEX_BIN`          | Project-local Codex CLI                   | Override the executable for another compatible installation |
-| `CODEX_MODEL`        | Host’s Codex default                      | Optional model override supported by the host’s account     |
-| `CLAUDE_MODEL`       | Local SDK default                         | Optional Claude model override on the runner computer       |
-| `ANTHROPIC_API_KEY`  | Local Claude login/provider configuration | Optional API key, set only on the runner computer           |
+| Environment variable    | Default                                   | Purpose                                                     |
+| ----------------------- | ----------------------------------------- | ----------------------------------------------------------- |
+| `HOST`                  | `127.0.0.1`                               | Address to bind; `0.0.0.0` enables LAN access               |
+| `PORT`                  | `3000`                                    | HTTP and WebSocket port                                     |
+| `HOST_REPO_PATH`        | This repository                           | Default Git project in the picker                           |
+| `MULTIPLAYER_STATE_DIR` | App’s `.multiplayer/`                     | Saved project list and hosted worktrees for added projects  |
+| `CODEX_BIN`             | Project-local Codex CLI                   | Override the executable for another compatible installation |
+| `CODEX_MODEL`           | Host’s Codex default                      | Optional model override supported by the host’s account     |
+| `CLAUDE_MODEL`          | Local SDK default                         | Optional Claude model override on the runner computer       |
+| `ANTHROPIC_API_KEY`     | Local Claude login/provider configuration | Optional API key, set only on the runner computer           |
 
 ## Architecture
 
@@ -140,7 +145,7 @@ Protocol reference: [Codex app-server](https://learn.chatgpt.com/docs/app-server
 
 ### Harness boundaries
 
-Codex and Claude Code use the same room and decision protocol. Gemini and other adapters are future work. A browser alone cannot clone files or execute a local harness; the teammate starts the runner in a terminal. The host selects a GitHub/GitLab project through `HOST_REPO_PATH`; browsing and selecting repositories through a GitHub login UI is not included.
+Codex and Claude Code use the same room and decision protocol. Gemini and other adapters are future work. A browser alone cannot clone files or execute a local harness; the teammate starts the runner in a terminal. The host adds existing Git checkouts through the project picker, or sets a default with `HOST_REPO_PATH`. Clone a GitHub/GitLab repository onto the host before adding it; browsing repositories through a GitHub login UI is not included.
 
 The agents interact through shared decisions and visible work reports on the server. They do not directly control each other or automatically exchange working-tree patches. The server compares relative file paths against the same repository/commit and can route a diff request back to the machine holding that file. Integration still happens through Git review and merging.
 

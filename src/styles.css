@@ -550,6 +550,24 @@ textarea {
   padding: 12px 13px;
   margin: 19px 0 12px;
 }
+.project-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0;
+}
+.project-actions .button,
+.project-add .button {
+  min-height: 32px;
+  padding: 7px 10px;
+  font-size: 10px;
+}
+.project-add {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0 12px 12px;
+  margin-bottom: 16px;
+}
 .repo-target > div {
   display: flex;
   align-items: center;

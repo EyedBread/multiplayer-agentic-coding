@@ -26,9 +26,10 @@ export async function createWorktree(
   agentId: string,
   branch: string,
   pinnedBase?: string,
+  storageRoot?: string,
 ) {
   const base = pinnedBase || (await git(repo, 'rev-parse', 'HEAD')).trim();
-  const parent = path.join(repo, '.multiplayer', 'worktrees', roomId);
+  const parent = path.join(storageRoot || path.join(repo, '.multiplayer', 'worktrees'), roomId);
   await mkdir(parent, { recursive: true });
   const cwd = path.join(parent, agentId);
   await git(repo, 'worktree', 'add', '-b', branch, cwd, base);

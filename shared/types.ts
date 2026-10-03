@@ -64,6 +64,7 @@ export type Room = {
   overlaps: Overlap[];
   decisionVersion: number;
   project?: RunnerProject;
+  projectId?: string;
   runners: Runner[];
 };
 export type Session = { roomId: string; memberId: string; token: string };
@@ -74,4 +75,14 @@ export type HostConfig = {
   dirty: boolean;
   codexAvailable: boolean;
   canHost: boolean;
+  canManageProjects?: boolean;
+  projects?: HostProject[];
+};
+export type HostProject = {
+  id: string;
+  name: string;
+  path: string;
+  branch: string;
+  dirty: boolean;
+  error?: string;
 };

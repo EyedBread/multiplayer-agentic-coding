@@ -335,7 +335,7 @@ export function App() {
           Rejoining your room…<Button onClick={leave}>Back to lobby</Button>
         </div>
       ) : (
-        <Lobby config={config} enter={enter} onError={setError} />
+        <Lobby config={config} onConfig={setConfig} enter={enter} onError={setError} />
       )}
       {error && (
         <div className="toast error-toast" role="alert">
@@ -358,10 +358,12 @@ export function App() {
 
 function Lobby({
   config,
+  onConfig,
   enter,
   onError,
 }: {
   config: HostConfig | null;
+  onConfig: (config: HostConfig) => void;
   enter: (r: { room: Room; session: Session }) => void;
   onError: (s: string) => void;
 }) {
@@ -373,6 +375,10 @@ function Lobby({
   const [code, setCode] = useState(inviteCode);
   const [busy, setBusy] = useState('');
   const [newProfile, setNewProfile] = useState(false);
+  const [projectId, setProjectId] = useState('default');
+  const [projectPath, setProjectPath] = useState('');
+  const [addingProject, setAddingProject] = useState(false);
+  const selectedProject = config?.projects?.find((project) => project.id === projectId);
   const returning =
     !newProfile &&
     saved.find((item) => normalizeRoomCode(item.roomCode) === normalizeRoomCode(code));
@@ -404,10 +410,25 @@ function Lobby({
           name: mode === 'demo' ? 'The weekend build' : roomName,
           memberName: name.trim() || 'You',
           mode,
+          ...(mode === 'live' ? { projectId } : {}),
         }),
       );
     } catch (e) {
       onError((e as Error).message);
+    } finally {
+      setBusy('');
+    }
+  }
+  async function addProject() {
+    setBusy('project');
+    try {
+      const result = await api<{ id: string }>('/api/projects', null, { path: projectPath });
+      onConfig(await api<HostConfig>('/api/config', null));
+      setProjectId(result.id);
+      setProjectPath('');
+      setAddingProject(false);
+    } catch (error) {
+      onError((error as Error).message);
     } finally {
       setBusy('');
     }
@@ -590,16 +611,95 @@ function Lobby({
                       required
                     />
                   </label>
-                  <div className="repo-target">
-                    <div>
-                      <GitBranch size={16} />
-                      <strong>{config?.repoName || 'Finding your project…'}</strong>
+                  {config?.projects ? (
+                    <>
+                      <label>
+                        Project
+                        <select
+                          value={projectId}
+                          onChange={(event) => setProjectId(event.target.value)}
+                          disabled={!!busy}
+                        >
+                          {config.projects.map((project) => (
+                            <option key={project.id} value={project.id}>
+                              {project.name} · {project.branch || 'Unavailable'}
+                              {project.path ? ` — ${project.path}` : ''}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <div className="project-actions">
+                        {config.canManageProjects && (
+                          <Button
+                            onClick={() => setAddingProject(!addingProject)}
+                            disabled={!!busy}
+                          >
+                            <Plus size={14} />
+                            {addingProject ? 'Cancel' : 'Add project'}
+                          </Button>
+                        )}
+                        <Button
+                          disabled={!!busy}
+                          onClick={() => {
+                            setBusy('projects');
+                            void api<HostConfig>('/api/config', null)
+                              .then(onConfig)
+                              .catch((error: Error) => onError(error.message))
+                              .finally(() => setBusy(''));
+                          }}
+                        >
+                          Refresh projects
+                        </Button>
+                      </div>
+                      {addingProject && (
+                        <div className="project-add">
+                          <label>
+                            Repository folder on this computer
+                            <input
+                              value={projectPath}
+                              onChange={(event) => setProjectPath(event.target.value)}
+                              placeholder="/Users/you/projects/my-project"
+                              disabled={!!busy}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter') {
+                                  event.preventDefault();
+                                  if (!busy && projectPath.trim()) void addProject();
+                                }
+                              }}
+                            />
+                          </label>
+                          <p className="form-note">
+                            Choose an existing Git checkout. Teammates will be able to select it for
+                            new rooms.
+                          </p>
+                          <Button
+                            onClick={() => void addProject()}
+                            disabled={!!busy || !projectPath.trim()}
+                          >
+                            {busy === 'project' && <Loader2 className="spin" size={14} />}Add
+                            repository
+                          </Button>
+                        </div>
+                      )}
+                      {!config.canManageProjects && (
+                        <p className="form-note">
+                          The host can add more repositories from localhost.
+                        </p>
+                      )}
+                      {selectedProject?.error && (
+                        <p className="form-note">{selectedProject.error}</p>
+                      )}
+                    </>
+                  ) : (
+                    <div className="repo-target">
+                      <div>
+                        <GitBranch size={16} />
+                        <strong>{config?.repoName || 'Finding your project…'}</strong>
+                      </div>
+                      <span>{config?.branch || 'Local Git project'}</span>
                     </div>
-                    <span>
-                      {config?.branch || 'Local Git project'} · your room’s shared starting point
-                    </span>
-                  </div>
-                  {config?.dirty && (
+                  )}
+                  {(selectedProject?.dirty ?? config?.dirty) && (
                     <p className="form-note">
                       Commit or stash this project’s changes before starting a live room.
                     </p>
@@ -607,7 +707,9 @@ function Lobby({
                   <Button
                     type="submit"
                     kind="primary"
-                    disabled={!!busy || !config?.canHost}
+                    disabled={
+                      !!busy || !config?.canHost || !!selectedProject?.error || addingProject
+                    }
                     className="full"
                   >
                     {busy === 'live' ? <Loader2 className="spin" size={17} /> : <Plus size={17} />}
@@ -1342,7 +1444,12 @@ function Workspace({
           <div className="modal-meta">
             <GitBranch size={15} />
             {room.repoName}
-            <span>{room.mode === 'demo' ? 'Demo project' : config?.repoPath}</span>
+            <span>
+              {room.mode === 'demo'
+                ? 'Demo project'
+                : config?.projects?.find((project) => project.id === room.projectId)?.path ||
+                  room.branch}
+            </span>
           </div>
         </Modal>
       )}
