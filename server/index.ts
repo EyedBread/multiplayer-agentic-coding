@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { Agent, Decision, Room, Session } from '../shared/types.js';
+import type { HarnessClient, Runner } from '../shared/runner.js';
+import { repositoryRemote } from '../shared/runner.js';
 import { VOTE_DURATION_MS } from '../shared/types.js';
 import {
   activity,
@@ -21,8 +23,9 @@ import {
   token,
   uid,
 } from './room.js';
-import { changedFiles, createWorktree, fileDiff, repoInfo } from './git.js';
-import { CODEX_BINARY, CodexClient } from './codex.js';
+import { changedFiles, createWorktree, fileDiff, repoInfo, git } from './git.js';
+import { codexInvocation, CodexClient } from './codex.js';
+import { RemoteHarnessClient, RunnerRegistry } from './runners.js';
 import { demoDiff, runDemoScenario, seedDemo } from './demo.js';
 
 const exec = promisify(execFile);
@@ -32,14 +35,14 @@ const rooms = new Map<string, Room>();
 const sessions = new Map<string, Session>();
 const clients = new Map<string, Set<WebSocket>>();
 type Runtime = {
-  client?: CodexClient;
+  client?: HarnessClient;
   cwd?: string;
   base?: string;
   polling?: boolean;
   demoTimer?: NodeJS.Timeout;
 };
 const runtimes = new Map<string, Runtime>();
-const responders = new Map<string, (answer: string) => void>();
+const responders = new Map<string, (answer: string) => void | Promise<void>>();
 const requestDecisions = new Map<string, string[]>();
 const broadcastTimers = new Map<string, NodeJS.Timeout>();
 const app = express();
@@ -82,10 +85,17 @@ function getAgent(room: Room, id: string) {
   return agent;
 }
 function requireOwner(room: Room, agent: Agent, session: Session) {
-  if (agent.ownerId !== session.memberId && room.hostId !== session.memberId)
-    throw Object.assign(new Error('Only this agent’s owner or the host can control it.'), {
-      status: 403,
-    });
+  if (agent.ownerId !== session.memberId && (agent.runnerId || room.hostId !== session.memberId))
+    throw Object.assign(
+      new Error(
+        agent.runnerId
+          ? 'Only this agent’s owner can control their local runner.'
+          : 'Only this agent’s owner or the host can control it.',
+      ),
+      {
+        status: 403,
+      },
+    );
 }
 function newSession(room: Room, memberId: string): Session {
   const session = { roomId: room.id, memberId, token: token() };
@@ -119,7 +129,7 @@ async function resolve(room: Room, decision: Decision, answer: string) {
   responders.delete(decision.id);
   if (respond) {
     try {
-      respond(answer);
+      await respond(answer);
     } catch (error) {
       activity(room, `Could not deliver answer: ${String(error)}`);
     }
@@ -144,7 +154,7 @@ async function resolve(room: Room, decision: Decision, answer: string) {
         void runtime.client
           .steer(message)
           .then((sent) => {
-            if (sent) agent.contextVersion = version;
+            if (sent) agent.contextVersion = Math.max(agent.contextVersion, version);
             broadcast(room);
           })
           .catch(() => {
@@ -172,6 +182,19 @@ function codexEvent(
   const p = message.params || {};
   const client = runtimes.get(agent.id)?.client;
   if (!client) return;
+  const reply = (id: string | number, result: unknown) => {
+    void Promise.resolve()
+      .then(() => client.reply(id, result))
+      .catch((error) => {
+        entry(agent, 'error', `Could not deliver the response: ${error}`);
+        broadcast(room);
+      });
+  };
+  const reject = (id: string | number, message: string) => {
+    void Promise.resolve()
+      .then(() => client.reject(id, message))
+      .catch(() => {});
+  };
   if (message.id !== undefined && message.method) {
     const id = message.id;
     try {
@@ -185,9 +208,12 @@ function codexEvent(
           options: options(args.options),
           scope: 'team',
         });
-        responders.set(d.id, (answer) => {
-          client.reply(id, { contentItems: [{ type: 'inputText', text: answer }], success: true });
-          agent.status = 'working';
+        responders.set(d.id, async (answer) => {
+          await client.reply(id, {
+            contentItems: [{ type: 'inputText', text: answer }],
+            success: true,
+          });
+          if (agent.status === 'waiting') agent.status = 'working';
         });
         bindRequest(room, agent, id, [d]);
         return;
@@ -196,31 +222,53 @@ function codexEvent(
         message.method === 'item/tool/requestUserInput' ||
         message.method === 'tool/requestUserInput'
       ) {
-        const questions = p.questions as any[];
-        if (!Array.isArray(questions) || questions.some((q) => q.isSecret)) {
-          client.reply(id, { answers: {} });
+        if (!Array.isArray(p.questions) || !p.questions.length || p.questions.length > 8)
+          throw new Error('Provide one to eight structured questions.');
+        if (p.questions.some((q: any) => q?.isSecret)) {
+          reply(id, { answers: {} });
           entry(agent, 'system', 'Private input is not supported in a shared room.');
           return;
         }
-        const answers: Record<string, { answers: string[] }> = {};
-        const decisions = questions.map((q) => {
-          const d = addDecision(room, {
-            agentId: agent.id,
-            ownerId: agent.ownerId,
-            question: q.question,
-            detail: q.header || 'A question from your agent',
-            options: (q.options ?? []).map((o: any) => o.label),
-            scope: 'owner',
-          });
-          responders.set(d.id, (answer) => {
-            answers[q.id] = { answers: [answer] };
-            if (Object.keys(answers).length === questions.length) {
-              client.reply(id, { answers });
-              agent.status = 'working';
-            }
-          });
-          return d;
+        // Validate every question before changing room state, including duplicate answer keys.
+        const questions = p.questions.map((q: any) => {
+          if (
+            !q ||
+            typeof q !== 'object' ||
+            (q.options !== undefined && (!Array.isArray(q.options) || q.options.length > 8))
+          )
+            throw new Error('Invalid structured question.');
+          return {
+            id: text(q.id, 'Question identifier', 100),
+            question: text(q.question, 'Question', 1000),
+            header: q.header
+              ? text(q.header, 'Question header', 160)
+              : 'A question from your agent',
+            options: (q.options ?? []).map((o: any) => text(o?.label, 'Choice', 300)),
+          };
         });
+        if (new Set(questions.map((q: any) => q.id)).size !== questions.length)
+          throw new Error('Question identifiers must be distinct.');
+        const answers: Record<string, { answers: string[] }> = Object.create(null);
+        const decisions = questions.map(
+          (q: { id: string; question: string; header: string; options: string[] }) => {
+            const d = addDecision(room, {
+              agentId: agent.id,
+              ownerId: agent.ownerId,
+              question: q.question,
+              detail: q.header || 'A question from your agent',
+              options: q.options,
+              scope: 'owner',
+            });
+            responders.set(d.id, async (answer) => {
+              answers[q.id] = { answers: [answer] };
+              if (Object.keys(answers).length === questions.length) {
+                await client.reply(id, { answers });
+                if (agent.status === 'waiting') agent.status = 'working';
+              }
+            });
+            return d;
+          },
+        );
         bindRequest(room, agent, id, decisions);
         return;
       }
@@ -233,20 +281,20 @@ function codexEvent(
           : ['accept', 'decline'];
         const choices = ['accept', 'decline'].filter((choice) => allowed.includes(choice));
         if (!choices.length) {
-          client.reply(id, { decision: 'cancel' });
+          reply(id, { decision: 'cancel' });
           return;
         }
         const d = addDecision(room, {
           agentId: agent.id,
-          ownerId: room.hostId,
+          ownerId: agent.runnerId ? agent.ownerId : room.hostId,
           scope: 'approval',
           question: p.command ? 'Allow this command?' : 'Allow this file change?',
           detail: [p.command, p.reason, p.cwd].filter(Boolean).join('\n'),
           options: choices.map((c) => (c === 'accept' ? 'Allow once' : 'Decline')),
         });
-        responders.set(d.id, (answer) => {
-          client.reply(id, { decision: answer === 'Allow once' ? 'accept' : 'decline' });
-          agent.status = 'working';
+        responders.set(d.id, async (answer) => {
+          await client.reply(id, { decision: answer === 'Allow once' ? 'accept' : 'decline' });
+          if (agent.status === 'waiting') agent.status = 'working';
         });
         bindRequest(room, agent, id, [d]);
         return;
@@ -254,24 +302,24 @@ function codexEvent(
       if (message.method === 'item/permissions/requestApproval') {
         const d = addDecision(room, {
           agentId: agent.id,
-          ownerId: room.hostId,
+          ownerId: agent.runnerId ? agent.ownerId : room.hostId,
           scope: 'approval',
           question: 'Allow additional permissions for this turn?',
           detail: `${p.reason || ''}\n${JSON.stringify(p.permissions, null, 2)}`,
           options: ['Allow once', 'Decline'],
         });
-        responders.set(d.id, (answer) => {
-          client.reply(id, {
+        responders.set(d.id, async (answer) => {
+          await client.reply(id, {
             permissions: answer === 'Allow once' ? p.permissions : {},
             scope: 'turn',
           });
-          agent.status = 'working';
+          if (agent.status === 'waiting') agent.status = 'working';
         });
         bindRequest(room, agent, id, [d]);
         return;
       }
       if (message.method === 'mcpServer/elicitation/request') {
-        client.reply(id, { action: 'decline', content: null });
+        reply(id, { action: 'decline', content: null });
         entry(
           agent,
           'system',
@@ -279,9 +327,9 @@ function codexEvent(
         );
         return;
       }
-      client.reject(id, `Unsupported request: ${message.method}`);
+      reject(id, `Unsupported request: ${message.method}`);
     } catch (error) {
-      client.reject(id, String(error));
+      reject(id, String(error));
     }
   } else if (message.method === 'turn/started') {
     client.turnId = p.turn.id;
@@ -312,11 +360,11 @@ function codexEvent(
       entry(
         agent,
         'system',
-        `Changed ${(item.changes || []).map((c: any) => path.relative(runtimes.get(agent.id)?.cwd || '', c.path)).join(', ')}`,
+        `Changed ${(item.changes || []).map((c: any) => (agent.runnerId ? c.path : path.relative(runtimes.get(agent.id)?.cwd || '', c.path))).join(', ')}`,
         item.id,
       );
   } else if (message.method === 'error')
-    entry(agent, 'error', p.error?.message || 'Codex reported an error.');
+    entry(agent, 'error', p.error?.message || 'The harness reported an error.');
   else if (message.method === 'serverRequest/resolved') {
     const key = `${agent.id}:${p.requestId}`;
     for (const decisionId of requestDecisions.get(key) ?? []) {
@@ -338,13 +386,85 @@ function codexEvent(
   broadcast(room);
 }
 
+function updateFiles(room: Room, agent: Agent, files: string[]) {
+  if (JSON.stringify(files) === JSON.stringify(agent.files)) return;
+  const old = new Set(room.overlaps.map((o) => o.path));
+  agent.files = files;
+  room.overlaps = overlaps(room.agents);
+  for (const o of room.overlaps)
+    if (!old.has(o.path)) activity(room, `Potential overlap in ${o.path}`, 'overlap');
+  broadcast(room);
+}
+async function connectRemoteAgent(room: Room, agent: Agent) {
+  agent.status = 'starting';
+  agent.error = undefined;
+  const client = new RemoteHarnessClient(runnerRegistry, room, agent);
+  runtimes.set(agent.id, { client });
+  broadcast(room);
+  try {
+    await client.init();
+    agent.status = 'idle';
+    entry(
+      agent,
+      'system',
+      `${agent.harness === 'claude' ? 'Claude Code' : 'Codex'} connected on your computer. Your isolated worktree is ready. Send a prompt to begin.`,
+    );
+  } catch (error) {
+    const runner = room.runners.find((r) => r.id === agent.runnerId);
+    agent.status = runner?.status === 'online' ? 'error' : 'offline';
+    agent.error = String(error);
+    entry(agent, 'error', String(error));
+    client.close();
+  }
+  broadcast(room);
+}
+const runnerRegistry = new RunnerRegistry({
+  auth,
+  broadcast,
+  ready(room: Room, runner: Runner) {
+    activity(
+      room,
+      `${runner.name} connected with ${runner.harness === 'claude' ? 'Claude Code' : 'Codex'}`,
+    );
+    for (const agent of room.agents.filter((a) => a.runnerId === runner.id))
+      void connectRemoteAgent(room, agent);
+    broadcast(room);
+  },
+  disconnected(room, runner) {
+    for (const agent of room.agents.filter((a) => a.runnerId === runner.id)) {
+      cancelRequests(room, agent);
+      runtimes.delete(agent.id);
+      if (agent.status !== 'offline')
+        entry(
+          agent,
+          'system',
+          'Runner disconnected. The previous turn stopped. Reconnect the runner to start a fresh conversation in the same worktree, then send a prompt to continue.',
+        );
+      agent.status = 'offline';
+      agent.contextVersion = 0;
+    }
+    broadcast(room);
+  },
+  event: codexEvent,
+  files: updateFiles,
+  error(room, agent, message) {
+    agent.status = 'error';
+    agent.error = message;
+    entry(agent, 'error', message);
+    cancelRequests(room, agent);
+    broadcast(room);
+  },
+});
+runnerRegistry.mount(app);
+
 app.get('/api/config', async (req, res) => {
   const info = await repoInfo(repoPath).catch(() => ({
     name: path.basename(repoPath),
     branch: 'No Git repository',
     dirty: false,
   }));
-  const codexAvailable = await exec(CODEX_BINARY, ['--version'], { timeout: 5000 }).then(
+  const command = codexInvocation(['--version']);
+  const codexAvailable = await exec(command.command, command.args, { timeout: 5000 }).then(
     () => true,
     () => false,
   );
@@ -378,6 +498,17 @@ app.post('/api/rooms', async (req, res) => {
     info.name,
     info.branch,
   );
+  if (mode === 'live') {
+    const remote = await git(repoPath, 'remote', 'get-url', 'origin').then(
+      repositoryRemote,
+      () => null,
+    );
+    room.project = {
+      remoteUrl: remote?.remoteUrl ?? null,
+      identity: remote?.identity ?? null,
+      baseCommit: (await git(repoPath, 'rev-parse', 'HEAD')).trim(),
+    };
+  }
   if (mode === 'demo') seedDemo(room);
   rooms.set(room.id, room);
   res.json({ room, session: newSession(room, room.hostId) });
@@ -414,17 +545,38 @@ app.get('/api/room', (req, res) => res.json(auth(req).room));
 app.post('/api/agents', async (req, res) => {
   const { room, session } = auth(req);
   if (room.agents.length >= 6) throw new Error('A room can have up to six agents.');
+  const runnerId = req.body.runnerId;
+  const runner = runnerId
+    ? room.runners.find((r) => r.id === runnerId && r.ownerId === session.memberId)
+    : undefined;
+  if (runnerId && (!runner || runner.status !== 'online'))
+    throw new Error('Select an online runner that belongs to you.');
   const agent = makeAgent(
     room,
     session.memberId,
     text(req.body.name, 'Agent name', 32),
     text(req.body.task, 'Task', 300),
   );
+  agent.harness = runner?.harness ?? 'codex';
+  agent.runnerId = runner?.id;
+  if (runner) {
+    await connectRemoteAgent(room, agent);
+    activity(room, `${agent.name} joined the workspace on ${runner.name}`);
+    broadcast(room);
+    res.json(agent);
+    return;
+  }
   runtimes.set(agent.id, {});
   broadcast(room);
   try {
     if (room.mode === 'live') {
-      const worktree = await createWorktree(repoPath, room.id, agent.id, agent.branch);
+      const worktree = await createWorktree(
+        repoPath,
+        room.id,
+        agent.id,
+        agent.branch,
+        room.project?.baseCommit,
+      );
       const runtime: Runtime = { ...worktree };
       runtimes.set(agent.id, runtime);
       runtime.client = new CodexClient(
@@ -484,19 +636,23 @@ app.post('/api/agents/:id/prompt', async (req, res) => {
       }, 1500);
     } else {
       const client = runtimes.get(agent.id)?.client;
-      if (!client) throw new Error('Codex is not connected.');
+      if (!client) throw new Error('The agent’s harness is not connected.');
       const decisions = room.decisions
         .filter((d) => d.scope === 'team' && d.status === 'resolved')
         .reverse()
         .map((d) => `${d.question}\nDecision: ${d.answer}`)
         .join('\n\n');
+      const contextVersion = room.decisionVersion;
       await client.prompt(
         `${decisions ? `SHARED TEAM DECISIONS:\n${decisions}\n\n` : ''}TASK: ${agent.task}\n\n${prompt}`,
       );
-      agent.contextVersion = room.decisionVersion;
+      agent.contextVersion = Math.max(agent.contextVersion, contextVersion);
     }
   } catch (error) {
-    agent.status = 'error';
+    agent.status =
+      agent.runnerId && room.runners.find((r) => r.id === agent.runnerId)?.status !== 'online'
+        ? 'offline'
+        : 'error';
     entry(agent, 'error', String(error));
   }
   broadcast(room);
@@ -515,6 +671,27 @@ app.post('/api/agents/:id/stop', async (req, res) => {
   broadcast(room);
   res.json({ ok: true });
 });
+app.post('/api/agents/:id/restart', async (req, res) => {
+  const { room, session } = auth(req);
+  const agent = getAgent(room, String(req.params.id));
+  requireOwner(room, agent, session);
+  if (!agent.runnerId || agent.status !== 'error')
+    throw new Error('Only a failed local session can be restarted.');
+  if (room.runners.find((r) => r.id === agent.runnerId)?.status !== 'online')
+    throw new Error('Reconnect the runner in its terminal first.');
+  agent.status = 'starting';
+  cancelRequests(room, agent);
+  broadcast(room);
+  await runnerRegistry.call(agent.runnerId, agent.id, 'close').catch(() => {});
+  entry(
+    agent,
+    'system',
+    'Restarting a fresh conversation in the same worktree. Existing files are preserved.',
+  );
+  agent.contextVersion = 0;
+  await connectRemoteAgent(room, agent);
+  res.json({ ok: true });
+});
 app.get('/api/agents/:id/diff', async (req, res) => {
   const { room } = auth(req);
   const agent = getAgent(room, String(req.params.id));
@@ -524,7 +701,9 @@ app.get('/api/agents/:id/diff', async (req, res) => {
   const diff =
     room.mode === 'demo'
       ? demoDiff(file, agent.name)
-      : await fileDiff(runtime!.cwd!, runtime!.base!, file);
+      : agent.runnerId
+        ? (await runnerRegistry.call(agent.runnerId, agent.id, 'diff', { file })).diff
+        : await fileDiff(runtime!.cwd!, runtime!.base!, file);
   res.json({ diff });
 });
 app.post('/api/decisions', (req, res) => {
@@ -588,6 +767,10 @@ const server = createServer(app);
 const wss = new WebSocketServer({ noServer: true, maxPayload: 4096 });
 server.on('upgrade', (req, socket, head) => {
   const url = new URL(req.url || '/', 'http://localhost');
+  if (url.pathname === '/runner-ws') {
+    runnerRegistry.upgrade(req, socket, head);
+    return;
+  }
   if (url.pathname !== '/ws') return; // Vite handles its own HMR socket.
   const origin = req.headers.origin;
   const originHost = origin
@@ -657,14 +840,7 @@ const fileTimer = setInterval(() => {
         runtime.polling = true;
         void changedFiles(runtime.cwd, runtime.base)
           .then((files) => {
-            if (JSON.stringify(files) !== JSON.stringify(agent.files)) {
-              const old = new Set(room.overlaps.map((o) => o.path));
-              agent.files = files;
-              room.overlaps = overlaps(room.agents);
-              for (const o of room.overlaps)
-                if (!old.has(o.path)) activity(room, `Potential overlap in ${o.path}`, 'overlap');
-              broadcast(room);
-            }
+            updateFiles(room, agent, files);
           })
           .catch((error) => {
             if (agent.error !== String(error)) {
@@ -700,6 +876,7 @@ server.listen(port, process.env.HOST || '127.0.0.1', () =>
 function shutdown() {
   clearInterval(voteTimer);
   clearInterval(fileTimer);
+  runnerRegistry.close();
   for (const runtime of runtimes.values()) {
     runtime.client?.close();
     clearTimeout(runtime.demoTimer);

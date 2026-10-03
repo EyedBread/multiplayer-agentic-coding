@@ -5,22 +5,25 @@
   "type": "module",
   "scripts": {
     "dev": "tsx server/index.ts",
+    "runner": "tsx runner/index.ts",
     "build": "tsc --noEmit && vite build",
     "start": "NODE_ENV=production tsx server/index.ts",
     "test": "node --import tsx --test tests/*.test.ts",
     "check": "tsc --noEmit",
-    "format": "prettier --write src server shared tests README.md index.html vite.config.ts tsconfig.json package.json"
+    "format": "prettier --write src server shared runner tests README.md index.html vite.config.ts tsconfig.json package.json"
   },
   "dependencies": {
-    "@openai/codex": "0.160.0",
+    "@anthropic-ai/claude-agent-sdk": "0.3.288",
     "@fontsource-variable/bricolage-grotesque": "^5.3.0",
     "@fontsource-variable/dm-sans": "^5.3.0",
     "@fontsource/ibm-plex-mono": "^5.3.0",
+    "@openai/codex": "0.160.0",
     "express": "^5.1.0",
     "lucide-react": "^0.468.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "ws": "^8.18.0"
+    "ws": "^8.18.0",
+    "zod": "4.6.5"
   },
   "devDependencies": {
     "@types/express": "^5.0.0",

@@ -2,20 +2,25 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
+import type { HarnessClient, HarnessEvent } from '../shared/runner.js';
 
-const projectBinary = fileURLToPath(new URL('../node_modules/.bin/codex', import.meta.url));
+const projectBinary = fileURLToPath(
+  new URL('../node_modules/@openai/codex/bin/codex.js', import.meta.url),
+);
 const desktopBinary = '/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex';
 export const CODEX_BINARY =
   process.env.CODEX_BIN ||
   (existsSync(projectBinary) ? projectBinary : existsSync(desktopBinary) ? desktopBinary : 'codex');
 
-type Rpc = {
-  id?: string | number;
-  method?: string;
-  params?: any;
-  result?: any;
-  error?: { message: string };
-};
+// npm's .bin shim is a shell script on Unix and a .cmd on Windows. Launch the
+// official JavaScript entrypoint with Node so the runner needs neither shell.
+export function codexInvocation(args: string[], binary = CODEX_BINARY) {
+  return /\.[cm]?js$/i.test(binary)
+    ? { command: process.execPath, args: [binary, ...args] }
+    : { command: binary, args };
+}
+
+type Rpc = HarnessEvent;
 const decisionTool = {
   type: 'function',
   name: 'team_decision',
@@ -32,7 +37,7 @@ const decisionTool = {
     additionalProperties: false,
   },
 };
-export class CodexClient {
+export class CodexClient implements HarnessClient {
   process: ChildProcessWithoutNullStreams;
   pending = new Map<
     number,
@@ -42,13 +47,15 @@ export class CodexClient {
   threadId = '';
   turnId = '';
   stopped = false;
+  private completedTurnId = '';
   constructor(
     readonly cwd: string,
     readonly onEvent: (message: Rpc) => void,
     readonly onExit: (message: string) => void,
     binary = CODEX_BINARY,
   ) {
-    this.process = spawn(binary, ['app-server', '--listen', 'stdio://'], {
+    const invocation = codexInvocation(['app-server', '--listen', 'stdio://'], binary);
+    this.process = spawn(invocation.command, invocation.args, {
       cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -73,7 +80,14 @@ export class CodexClient {
           if (message.error) pending.reject(new Error(message.error.message));
           else pending.resolve(message.result);
         }
-      } else this.onEvent(message);
+      } else {
+        if (message.method === 'turn/started') this.turnId = message.params?.turn?.id || '';
+        if (message.method === 'turn/completed') {
+          this.completedTurnId = message.params?.turn?.id || '';
+          this.turnId = '';
+        }
+        this.onEvent(message);
+      }
     });
     const fail = (reason: string) => {
       for (const p of this.pending.values()) {
@@ -135,8 +149,9 @@ export class CodexClient {
       threadId: this.threadId,
       input: [{ type: 'text', text, text_elements: [] }],
     });
-    this.turnId = result.turn.id;
-    return this.turnId;
+    // A short turn can complete in the same stdout chunk as its start response.
+    if (this.completedTurnId !== result.turn.id) this.turnId = result.turn.id;
+    return result.turn.id as string;
   }
   async steer(text: string) {
     if (!this.turnId) return false;

@@ -41,6 +41,7 @@ export function createRoom(
     activity: [],
     overlaps: [],
     decisionVersion: 0,
+    runners: [],
   };
   activity(room, `${memberName} opened the room`, 'join');
   return room;

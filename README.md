@@ -2,11 +2,11 @@
 
 **A shared coding room for your team and your agents.**
 
-One person runs the server with a Git project. Teammates join in their browsers, create rooms, follow every agent’s session, discuss and vote on shared decisions, and spot overlapping changes before merging. Agents currently run on the server computer using its Codex installation and account.
+One person runs the server with a Git project. Teammates join in their browsers, create rooms, follow every agent’s session, discuss and vote on shared decisions, and spot overlapping changes before merging. Run **Codex or Claude Code on your own computer** through a paired local runner, or use the host’s Codex session.
 
 ## Run it
 
-Requires **Node.js 22+**, Git, and macOS or Linux (Windows users can use WSL).
+Requires **Node.js 22+** and Git. The server and runner use Node on macOS, Linux, and Windows. On Windows, install Git for Windows for Claude Code, or run the tools in WSL. Automated checks run on macOS and Linux; a physical Windows teammate connection still needs a smoke test.
 
 ```sh
 npm install
@@ -29,7 +29,7 @@ An existing Codex login is reused. Model usage follows the host’s Codex accoun
 HOST_REPO_PATH=/absolute/path/to/your/repo npm run dev
 ```
 
-The target must be a Git repository with an initial commit and a clean working tree. Commit or stash changes before creating a live room. Agents start from the latest commit; uncommitted changes are not copied.
+The target must be a Git repository with an initial commit and a clean working tree. Commit or stash changes before creating a live room. Each room pins the current commit. Every host or local agent starts from that same commit; uncommitted changes are not copied. Push the starting commit if teammates need to fetch it from GitHub or GitLab.
 
 Add `.multiplayer/` to that repository’s `.gitignore` before hosting. Agent worktrees are created under `.multiplayer/worktrees/<room>/<agent>` on `codex/<room>-<agent>` branches. The app does not automatically commit, merge, push, or delete them.
 
@@ -41,7 +41,36 @@ HOST=0.0.0.0 HOST_REPO_PATH=/absolute/path/to/your/repo npm run dev
 
 Open the app using the server computer’s LAN address (for example `http://192.168.1.10:3000`). Any teammate who can reach the server can create a room using the configured Git project, or join an existing room with its code. Share the LAN address and room code. A `localhost` invite works only on the server computer itself. Keep the server running while the team works.
 
-This MVP is for trusted teams on a local network. Invite codes grant room access. Each member receives a separate session token, and the server enforces ownership for agent controls. A room’s creator is its host and handles command and filesystem approval requests, including for rooms created from another computer. All rooms use the server computer’s project and Codex account. Do not expose this development server directly to the public internet; internet hosting needs HTTPS, account authentication, and stronger process isolation.
+This MVP is for trusted teams on a local network. Invite codes grant room access. Each member receives a separate session token, and the server enforces ownership for agent controls. The room creator handles approvals for agents executing on the server. **Local agents accept prompts, stops, and permission approvals only from their owner**, including when the room host is another person. All rooms use the configured project, but local runners use their own machine’s harness credentials. Internet hosting needs HTTPS, account authentication, and stronger process isolation.
+
+### Connect Codex or Claude on your own computer
+
+1. Install this app on each teammate’s machine, then run `npm install` in its checkout. Install Git and Node.js 22+ first.
+2. Set up the chosen harness locally. For Codex, run `npx --no-install codex login` in the app checkout. For Claude, sign in with your local Claude Code CLI, or configure `ANTHROPIC_API_KEY` or a supported API provider in the runner terminal. The SDK includes the Claude Code runtime. Provider credentials stay on this machine.
+3. Join a **live room** in the browser and choose **Connect runner**. Select Codex or Claude Code and generate a pairing code. Each code belongs to the member who generated it, expires after ten minutes, and can be claimed once.
+4. Run the generated command in the **app checkout**, with the room server’s LAN URL and a path to your own project checkout:
+
+```sh
+npm run runner -- --server http://192.168.1.10:3000 --pair YOUR_PAIRING_CODE --repo "/path/to/project"
+```
+
+For Windows PowerShell, use a Windows path such as `--repo "C:\\projects\\my-project"`. For WSL, use a Linux path. `localhost` only works when the runner and server are on the same computer.
+
+To clone the room’s repository into a **new** folder, replace `--repo` with `--clone`:
+
+```sh
+npm run runner -- --server http://192.168.1.10:3000 --pair YOUR_PAIRING_CODE --clone "/path/to/new-checkout"
+```
+
+The runner uses your local Git credentials. It checks the repository identity and exact room commit before connecting. It fetches that commit if missing, creates a dedicated worktree for each agent, and preserves existing checkout files. HTTPS and SSH remotes are supported. Projects with no network remote need an existing checkout containing the pinned commit.
+
+5. Keep the terminal open. In **Add agent**, select your online runner. You can start several independent agents on the same runner, subject to the room’s six-agent limit. Pair another runner to use the other harness, even on the same computer.
+
+The runner prints a resume command and stores its own credential in `~/.multiplayer/runners/` (file mode `0600` on Unix). Use the printed `npm run runner -- --resume "…"` command after closing its terminal. `--state-file PATH` selects another state location. A failed clone still saves the credential; resume with `--repo PATH` after repairing the checkout. Use **Disconnect** in the room to revoke a runner’s credential.
+
+If the connection drops, the runner interrupts and closes its harness sessions. The server cancels pending questions and marks the agents offline once it detects the loss. Reconnecting reopens the same worktrees with **fresh harness conversations**, preserves agent ownership, and waits for a new prompt. It does not replay an interrupted task. A silent network failure can take a heartbeat interval to detect. A server restart ends the room and requires pairing again; it does not remove local worktrees.
+
+Claude authentication follows the official SDK’s local authentication support and account eligibility. [Anthropic’s June 16, 2026 usage update](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan) says SDK and third-party app usage still draws from subscription limits while its announced change is paused. API/provider authentication is also supported. This app neither collects nor shares provider login tokens.
 
 ### Leave and return to your profile
 
@@ -61,52 +90,59 @@ You can also create your own votes, add agents, send simulated prompts, and insp
 
 ## Live workflow
 
-- Create a live room and add an agent with a name and task. This creates its own worktree and Codex conversation.
-- Send a prompt to start work. Everyone can see public agent messages, commands, status, and changed files. The owner and host can send prompts or stop the agent.
+- Create a live room and add an agent with a name, task, and execution location. This creates its own worktree and Codex or Claude conversation.
+- Send a prompt to start work. Everyone can see public agent messages, commands, status, and changed files. Only the owner controls a local agent. Host agents retain owner and room-host controls.
 - Agents have a `team_decision` tool for shared API, dependency, architecture, and product choices. Ordinary structured agent questions go to their owner; any teammate can promote a question with multiple choices to a team vote.
 - Team votes last **60 seconds**. Each eligible member gets one changeable ballot. The tally informs the decision; it never automatically resumes the agent. Once voting closes, the decision owner selects and explicitly approves the final answer, even when there is a clear winner. The owner is the asking agent’s owner, or the initiator of a manually created vote. The room host cannot override another owner’s decision. Teammates joining after a vote opens participate starting with the next vote.
 - Each team vote has its own real-time discussion. All room members, including people who joined after voting opened, can send messages while voting or owner approval is pending. Each discussion keeps its latest 100 messages, with up to 1,000 characters per message. Settled or cancelled discussions are read-only and remain available in the decision history while the server is running.
-- Only the asking agent waits. Settled decisions are sent to running agents with `turn/steer` and included in every subsequent prompt. “Decision queued” means an agent has not yet received the latest shared context. Delivery is not a guarantee that the implementation follows the decision.
-- Permission approvals never become votes and never time out into permission grants. The room host must explicitly approve or decline.
+- Only the asking agent waits. Approved answers return to its blocked tool. Running Codex agents receive shared decisions through `turn/steer`. Claude receives the shared decision history with its next prompt; the UI leaves its context marked as queued until then. Both harnesses receive the full approved history on subsequent prompts. Delivery is not a guarantee that the implementation follows the decision.
+- Permission approvals never become votes and never time out into permission grants. The local runner owner, or the room host for a host agent, must explicitly approve or decline. Claude uses the SDK’s default permissions with a callback for owner decisions. Codex uses its workspace-write sandbox and on-request approvals. The runner does not add OS/container isolation beyond the harness itself.
 - File tracking compares each worktree against its starting commit every two seconds, including staged, unstaged, committed, deleted, and untracked files. Changes to the same path trigger a **potential overlap**, not a claim of a semantic or merge conflict.
 
 When ready, review and integrate the agents’ branches using Git. Worktrees remain available after the host stops.
 
 ## Commands and configuration
 
-| Command          | Purpose                                                   |
-| ---------------- | --------------------------------------------------------- |
-| `npm run dev`    | Combined Node host and Vite development server            |
-| `npm run check`  | TypeScript checks                                         |
-| `npm test`       | Voting, Git, and complete host/protocol integration tests |
-| `npm run build`  | Type check and production browser build                   |
-| `npm start`      | Serve the production build and host API                   |
-| `npm run format` | Format application source and documentation               |
+| Command                    | Purpose                                                   |
+| -------------------------- | --------------------------------------------------------- |
+| `npm run dev`              | Combined Node host and Vite development server            |
+| `npm run runner -- --help` | Connect a local Codex or Claude runner                    |
+| `npm run check`            | TypeScript checks                                         |
+| `npm test`                 | Voting, Git, and complete host/protocol integration tests |
+| `npm run build`            | Type check and production browser build                   |
+| `npm start`                | Serve the production build and host API                   |
+| `npm run format`           | Format application source and documentation               |
 
-| Environment variable | Default                 | Purpose                                                     |
-| -------------------- | ----------------------- | ----------------------------------------------------------- |
-| `HOST`               | `127.0.0.1`             | Address to bind; `0.0.0.0` enables LAN access               |
-| `PORT`               | `3000`                  | HTTP and WebSocket port                                     |
-| `HOST_REPO_PATH`     | This repository         | Git project to host                                         |
-| `CODEX_BIN`          | Project-local Codex CLI | Override the executable for another compatible installation |
-| `CODEX_MODEL`        | Host’s Codex default    | Optional model override supported by the host’s account     |
+| Environment variable | Default                                   | Purpose                                                     |
+| -------------------- | ----------------------------------------- | ----------------------------------------------------------- |
+| `HOST`               | `127.0.0.1`                               | Address to bind; `0.0.0.0` enables LAN access               |
+| `PORT`               | `3000`                                    | HTTP and WebSocket port                                     |
+| `HOST_REPO_PATH`     | This repository                           | Git project to host                                         |
+| `CODEX_BIN`          | Project-local Codex CLI                   | Override the executable for another compatible installation |
+| `CODEX_MODEL`        | Host’s Codex default                      | Optional model override supported by the host’s account     |
+| `CLAUDE_MODEL`       | Local SDK default                         | Optional Claude model override on the runner computer       |
+| `ANTHROPIC_API_KEY`  | Local Claude login/provider configuration | Optional API key, set only on the runner computer           |
 
 ## Architecture
 
 - **React + TypeScript + Vite:** responsive room interface, session panels, decisions, and diff views.
 - **Express + WebSocket:** authoritative in-memory room state, membership, presence, voting deadlines, per-vote discussion, owner approval, and access checks.
 - **Codex app-server over stdio:** one child process per agent, streamed public events, structured input, dynamic team decisions, approval replies, and interruption.
+- **Claude Agent SDK:** a local Claude Code session with streamed public messages, permission callbacks, structured questions, and an MCP `team_decision` tool. Later prompts resume the local Claude session while the runner remains connected.
+- **Local runner over WebSocket:** a separate credential scoped to one room member and harness, shared request/event adapters, project verification, reconnection, and local Git/diff reporting. The runner opens an outbound connection; teammates do not need to expose a port on their own computers.
 - **Git worktrees:** separate files and branches for each agent with shared visibility in the browser.
 
-`shared/types.ts` defines the public state, `server/room.ts` the voting rules, `server/codex.ts` the protocol transport, and `server/git.ts` file tracking. `server/index.ts` connects these to the HTTP and WebSocket routes. The UI lives in `src/`.
+`shared/types.ts` defines public room state and `shared/runner.ts` the harness/runner contract. `server/room.ts` owns voting rules, `server/runners.ts` pairing and remote command routing, and `server/git.ts` file tracking. `runner/index.ts` runs the teammate’s bridge, `runner/workspace.ts` verifies its project/worktrees, and `runner/claude.ts` adapts Claude Code. `server/codex.ts` is shared by host and local Codex agents. The UI lives in `src/`.
 
 Protocol reference: [Codex app-server](https://learn.chatgpt.com/docs/app-server). Dynamic tools and structured user input are experimental; the CLI version is pinned and should be upgraded with the integration tests.
 
-### Bring your own harness: next phase
+### Harness boundaries
 
-Local runners are not implemented in this version. Joining from Windows, macOS, or another device opens a browser client; it does not clone the repository or start a harness on that device. Every live agent currently runs Codex on the server computer in a separate worktree.
+Codex and Claude Code use the same room and decision protocol. Gemini and other adapters are future work. A browser alone cannot clone files or execute a local harness; the teammate starts the runner in a terminal. The host selects a GitHub/GitLab project through `HOST_REPO_PATH`; browsing and selecting repositories through a GitHub login UI is not included.
 
-The intended next architecture starts with a selected GitHub or GitLab repository and a shared starting commit. Each teammate installs a local runner, clones the project on their own machine, and connects their chosen harness, such as Codex, Claude Code, or Gemini. Credentials and execution stay on that teammate’s machine. The server coordinates membership, public session events, discussions, approved decisions, and potential overlaps. Events need repository and commit identifiers so overlap comparisons refer to the same project and starting point. A browser alone cannot perform the local cloning and harness execution; the runner supplies that connection. Harness adapters and decision delivery acknowledgments are part of that future work.
+The agents interact through shared decisions and visible work reports on the server. They do not directly control each other or automatically exchange working-tree patches. The server compares relative file paths against the same repository/commit and can route a diff request back to the machine holding that file. Integration still happens through Git review and merging.
+
+The [system slides](docs/multiplayer-architecture.pptx) explain the room workflow and architecture; a [PDF version](docs/multiplayer-architecture.pdf) is also available.
 
 ## MVP boundaries
 
@@ -115,4 +151,4 @@ The intended next architecture starts with a selected GitHub or GitLab repositor
 - No automatic merging, semantic conflict detection, remote container isolation, arbitrary harness adapters, or private credential entry through shared sessions.
 - Unsupported external app forms are declined. Plain prose questions are visible in the transcript; only structured questions and `team_decision` calls create decision cards.
 
-Tests use temporary Git repositories and a deterministic Codex protocol fixture, so `npm test` does not spend model credits. A real Codex smoke test is also used during development to verify runtime compatibility.
+Tests use temporary Git repositories, an actual runner/server connection with a deterministic Codex protocol fixture, and an injected Claude SDK query fixture. `npm test` does not spend model credits. Provider connectivity and physical Windows-to-Mac networking need separate smoke tests with the teammate’s own account.

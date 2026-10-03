@@ -1,4 +1,5 @@
-export type AgentStatus = 'starting' | 'idle' | 'working' | 'waiting' | 'error';
+import type { Harness, Runner, RunnerProject } from './runner.js';
+export type AgentStatus = 'starting' | 'idle' | 'working' | 'waiting' | 'error' | 'offline';
 export type Member = { id: string; name: string; color: number; online: boolean };
 export type Entry = {
   id: string;
@@ -17,6 +18,8 @@ export type Agent = {
   files: string[];
   entries: Entry[];
   contextVersion: number;
+  harness?: Harness;
+  runnerId?: string;
   error?: string;
 };
 export type Decision = {
@@ -60,6 +63,8 @@ export type Room = {
   activity: Activity[];
   overlaps: Overlap[];
   decisionVersion: number;
+  project?: RunnerProject;
+  runners: Runner[];
 };
 export type Session = { roomId: string; memberId: string; token: string };
 export type HostConfig = {

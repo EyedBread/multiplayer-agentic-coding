@@ -22,6 +22,7 @@ import {
   Loader2,
   LogOut,
   MessageSquare,
+  Monitor,
   MoreHorizontal,
   Plus,
   PanelRightClose,
@@ -41,6 +42,7 @@ import {
 } from 'lucide-react';
 import type { Agent, Decision, HostConfig, Room, Session } from '../shared/types';
 import { VOTE_DURATION_MS } from '../shared/types';
+import type { Harness, RunnerProject } from '../shared/runner';
 import { api, ApiError } from './api';
 import { createMembershipStore, normalizeRoomCode, type SavedMembership } from './membership';
 
@@ -477,7 +479,7 @@ function Lobby({
               <span className="dot" /> BETTER, TOGETHER
             </div>
             <div className="mini-agents">
-              {['You + Codex', 'Mina + Codex', 'Jules + Codex'].map((n, i) => (
+              {['You + Codex', 'Mina + Claude', 'Jules + Codex'].map((n, i) => (
                 <div className={`mini-agent ${colors[i]}`} key={n}>
                   <div className="mini-agent-top">
                     <span className="mini-agent-icon">
@@ -593,7 +595,9 @@ function Lobby({
                       <GitBranch size={16} />
                       <strong>{config?.repoName || 'Finding your project…'}</strong>
                     </div>
-                    <span>{config?.branch || 'Local Git project'} · runs on the server</span>
+                    <span>
+                      {config?.branch || 'Local Git project'} · your room’s shared starting point
+                    </span>
                   </div>
                   {config?.dirty && (
                     <p className="form-note">
@@ -603,7 +607,7 @@ function Lobby({
                   <Button
                     type="submit"
                     kind="primary"
-                    disabled={!!busy || !config?.canHost || !config?.codexAvailable}
+                    disabled={!!busy || !config?.canHost}
                     className="full"
                   >
                     {busy === 'live' ? <Loader2 className="spin" size={17} /> : <Plus size={17} />}
@@ -615,7 +619,8 @@ function Lobby({
                   )}
                   {config && !config.codexAvailable && (
                     <p className="form-note">
-                      Install and sign in to Codex on the host to run live agents.
+                      Connect your own Codex or Claude runner after creating the room. Codex on the
+                      server is currently unavailable.
                     </p>
                   )}
                   <div className="or-divider">
@@ -680,7 +685,7 @@ function Lobby({
             </form>
           </div>
           <p className="lobby-footnote">
-            <ShieldCheck size={14} /> Your project stays on the host computer.
+            <ShieldCheck size={14} /> Run on the host or connect your own local harness.
           </p>
         </div>
       </main>
@@ -741,7 +746,7 @@ function Workspace({
         ?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }),
     );
   }
-  const [modal, setModal] = useState<'invite' | 'agent' | 'decision' | null>(null);
+  const [modal, setModal] = useState<'invite' | 'agent' | 'decision' | 'runner' | null>(null);
   const [focus, setFocus] = useState<string | null>(null);
   const [diff, setDiff] = useState<{
     file: string;
@@ -750,6 +755,7 @@ function Workspace({
   const [diffLoading, setDiffLoading] = useState(false);
   const [name, setName] = useState('');
   const [task, setTask] = useState('');
+  const [selectedRunner, setSelectedRunner] = useState('');
   const [question, setQuestion] = useState('');
   const [choices, setChoices] = useState(['', '']);
   const [busy, setBusy] = useState(false);
@@ -763,6 +769,15 @@ function Workspace({
   const workingCount = room.agents.filter((a) => a.status === 'working').length;
   const agents = focus ? room.agents.filter((a) => a.id === focus) : room.agents;
   const enabled = connection === 'connected';
+  const myRunners = (room.runners ?? []).filter((runner) => runner.ownerId === session.memberId);
+  const chosenRunner = myRunners.find((runner) => runner.id === selectedRunner);
+  const executionAvailable =
+    room.mode === 'demo' ||
+    (selectedRunner ? chosenRunner?.status === 'online' : config?.codexAvailable !== false);
+  function openAgent() {
+    setSelectedRunner(myRunners.find((runner) => runner.status === 'online')?.id ?? '');
+    setModal('agent');
+  }
   async function copyInvite() {
     try {
       await navigator.clipboard.writeText(`${location.origin}/?join=${room.code}`);
@@ -798,7 +813,13 @@ function Workspace({
   async function submitAgent(e: FormEvent) {
     e.preventDefault();
     setBusy(true);
-    if (await action('/api/agents', { name, task })) {
+    if (
+      await action('/api/agents', {
+        name,
+        task,
+        ...(selectedRunner ? { runnerId: selectedRunner } : {}),
+      })
+    ) {
       setModal(null);
       setName('');
       setTask('');
@@ -923,9 +944,20 @@ function Workspace({
                   Run team scenario
                 </Button>
               )}
+              {room.mode === 'live' && (
+                <Button onClick={() => setModal('runner')} disabled={!enabled}>
+                  <Monitor size={16} />
+                  Connect runner
+                  {myRunners.some((runner) => runner.status === 'online') && (
+                    <span className="runner-online-count">
+                      {myRunners.filter((runner) => runner.status === 'online').length}
+                    </span>
+                  )}
+                </Button>
+              )}
               <Button
                 kind="primary"
-                onClick={() => setModal('agent')}
+                onClick={openAgent}
                 disabled={!enabled || room.agents.length >= 6}
               >
                 <Plus size={17} />
@@ -1040,11 +1072,7 @@ function Workspace({
                       />
                     ))}
                     {!focus && room.agents.length < 6 && (
-                      <button
-                        className="add-agent-card"
-                        onClick={() => setModal('agent')}
-                        disabled={!enabled}
-                      >
+                      <button className="add-agent-card" onClick={openAgent} disabled={!enabled}>
                         <span className="add-agent-art">
                           <span className="dashed-orbit" />
                           <Plus size={24} />
@@ -1295,7 +1323,7 @@ function Workspace({
           {enabled ? 'Connected to host' : 'Connection lost · reconnecting…'}
         </span>
         <span>
-          {room.mode === 'demo' ? 'SIMULATED AGENTS' : 'CODEX APP SERVER'}
+          {room.mode === 'demo' ? 'SIMULATED AGENTS' : 'MULTIPLAYER SERVER'}
           <span className="statusbar-divider">/</span>ROOM {room.code}
           <span className="statusbar-divider">/</span>
           <span>
@@ -1364,6 +1392,37 @@ function Workspace({
             follow along.
           </p>
           <form onSubmit={submitAgent}>
+            {room.mode === 'live' && (
+              <label>
+                Run this agent on
+                <select
+                  value={selectedRunner}
+                  onChange={(e) => setSelectedRunner(e.target.value)}
+                  disabled={busy}
+                >
+                  <option value="" disabled={config?.codexAvailable === false}>
+                    Server computer · Codex
+                    {config?.codexAvailable === false ? ' (unavailable)' : ''}
+                  </option>
+                  {myRunners.map((runner) => (
+                    <option key={runner.id} value={runner.id} disabled={runner.status !== 'online'}>
+                      {runner.name} · {runner.harness === 'claude' ? 'Claude' : 'Codex'}
+                      {runner.status !== 'online' ? ` (${runner.status})` : ''}
+                    </option>
+                  ))}
+                </select>
+                <span className="field-help">
+                  {selectedRunner
+                    ? 'Your local runner creates the worktree. Only you control this agent.'
+                    : 'The room host’s Codex account runs this session.'}
+                </span>
+                {!myRunners.some((runner) => runner.status === 'online') && (
+                  <button className="inline-link" type="button" onClick={() => setModal('runner')}>
+                    Connect your own computer <ArrowUpRight size={13} />
+                  </button>
+                )}
+              </label>
+            )}
             <label>
               Agent name
               <input
@@ -1390,15 +1449,34 @@ function Workspace({
               <p>
                 {room.mode === 'demo'
                   ? 'This will add a simulated agent to your demo room.'
-                  : 'We’ll create a Git worktree from the latest commit and connect a Codex session. Send a prompt when you’re ready to start.'}
+                  : selectedRunner
+                    ? `We’ll start ${chosenRunner?.harness === 'claude' ? 'Claude' : 'Codex'} in a separate worktree on ${chosenRunner?.name ?? 'your computer'}. Send a prompt when you’re ready.`
+                    : 'We’ll create a Git worktree on the server and connect a Codex session. Send a prompt when you’re ready to start.'}
               </p>
             </div>
-            <Button className="full" type="submit" kind="primary" disabled={busy}>
+            <Button
+              className="full"
+              type="submit"
+              kind="primary"
+              disabled={busy || !enabled || !executionAvailable}
+            >
               {busy ? <Loader2 size={17} className="spin" /> : <Plus size={17} />}
               {busy ? 'Preparing the workspace…' : 'Add agent'}
             </Button>
           </form>
         </Modal>
+      )}
+      {modal === 'runner' && (
+        <RunnerModal
+          room={room}
+          session={session}
+          enabled={enabled}
+          now={now}
+          action={action}
+          notify={notify}
+          onError={onError}
+          close={() => setModal(null)}
+        />
       )}
       {modal === 'decision' && (
         <Modal
@@ -1506,6 +1584,223 @@ function Workspace({
   );
 }
 
+function RunnerModal({
+  room,
+  session,
+  enabled,
+  now,
+  action,
+  notify,
+  onError,
+  close,
+}: {
+  room: Room;
+  session: Session;
+  enabled: boolean;
+  now: number;
+  action: Action;
+  notify: (message: string) => void;
+  onError: (message: string) => void;
+  close: () => void;
+}) {
+  const [harness, setHarness] = useState<Harness>('codex');
+  const [checkout, setCheckout] = useState<'repo' | 'clone'>('repo');
+  const [pairing, setPairing] = useState<{
+    code: string;
+    expiresAt: number;
+    project: RunnerProject;
+  } | null>(null);
+  const [busy, setBusy] = useState('');
+  const runners = (room.runners ?? []).filter((runner) => runner.ownerId === session.memberId);
+  const project = pairing?.project ?? room.project;
+  const seconds = pairing
+    ? Math.min(600, Math.max(0, Math.ceil((pairing.expiresAt - now) / 1000)))
+    : 0;
+  // Every interpolated argument is restricted to a non-executable alphabet. The path
+  // stays a literal placeholder so no user-supplied path can become shell syntax.
+  const safeOrigin = /^https?:\/\/[a-z0-9.:[\]-]+(?::\d+)?$/i.test(location.origin)
+    ? location.origin
+    : '';
+  const safeCode = pairing && /^[a-z0-9-]+$/i.test(pairing.code) ? pairing.code : '';
+  const command =
+    pairing && safeOrigin && safeCode
+      ? `npm run runner -- --server "${safeOrigin}" --pair "${safeCode}" --${checkout} "./project"`
+      : '';
+  async function generate() {
+    if (!enabled) return;
+    setBusy('pair');
+    try {
+      setPairing(await api('/api/runners/pair', session, { harness }));
+    } catch (error) {
+      onError((error as Error).message);
+    } finally {
+      setBusy('');
+    }
+  }
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(command);
+      notify('Runner command copied. Replace ./project with your local path before running.');
+    } catch {
+      onError('Clipboard unavailable. Select and copy the command below.');
+    }
+  }
+  async function revoke(id: string) {
+    setBusy(id);
+    if (await action(`/api/runners/${id}/revoke`)) notify('Runner disconnected');
+    setBusy('');
+  }
+  return (
+    <Modal title="Your machine. Your harness." eyebrow="CONNECT A LOCAL RUNNER" close={close}>
+      <p className="modal-description">
+        Run agents in local Git worktrees with your own credentials. Your teammates follow the
+        public session in this room.
+      </p>
+      <div className="runner-setup-note">
+        <Monitor size={20} />
+        <p>
+          On your computer, install Node.js 22+ and Git, clone the{' '}
+          <a
+            href="https://github.com/EyedBread/multiplayer-agentic-coding"
+            target="_blank"
+            rel="noreferrer"
+          >
+            Multiplayer app
+          </a>
+          , and run <code>npm install</code> in its folder. Keep the runner terminal open while you
+          work.
+        </p>
+      </div>
+      <label>
+        Your harness
+        <select
+          value={harness}
+          disabled={!!busy}
+          onChange={(event) => {
+            setHarness(event.target.value as Harness);
+            setPairing(null);
+          }}
+        >
+          <option value="codex">Codex</option>
+          <option value="claude">Claude Code</option>
+        </select>
+        <span className="field-help">
+          {harness === 'codex'
+            ? 'Sign in to Codex on this computer first. The runner uses your local login.'
+            : 'Use your local Claude login, ANTHROPIC_API_KEY, or supported provider credentials.'}
+        </span>
+      </label>
+      <label>
+        Project checkout
+        <select
+          value={checkout}
+          onChange={(event) => setCheckout(event.target.value as 'repo' | 'clone')}
+        >
+          <option value="repo">Use a repository already on this computer</option>
+          <option value="clone" disabled={!project?.remoteUrl}>
+            Clone the room’s repository into a new folder
+          </option>
+        </select>
+        <span className="field-help">
+          {checkout === 'clone'
+            ? `The runner clones ${project?.identity || room.repoName} using your local Git credentials.`
+            : `Use an existing checkout of ${room.repoName}. The runner checks the repository and starting commit.`}
+        </span>
+      </label>
+      {pairing ? (
+        <div className="runner-pairing">
+          <div className="runner-pairing-heading">
+            <span className="eyebrow">RUN IN YOUR MULTIPLAYER APP FOLDER</span>
+            <span className={seconds ? '' : 'expired'}>
+              <Clock3 size={12} />
+              {seconds
+                ? `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
+                : 'Expired'}
+            </span>
+          </div>
+          <textarea
+            className="runner-command"
+            aria-label="Runner pairing command"
+            readOnly
+            value={command || 'Unable to create a safe command for this server address.'}
+            rows={4}
+            onFocus={(event) => event.target.select()}
+          />
+          <p className="form-note">
+            Replace <code>./project</code> with{' '}
+            {checkout === 'clone' ? 'a new empty folder path' : 'your local repository path'}. This
+            single-use code expires after 10 minutes. It connects only your runner to this room.
+          </p>
+          <div className="runner-command-actions">
+            <Button
+              kind="primary"
+              disabled={!seconds || !command || !enabled}
+              onClick={() => void copy()}
+            >
+              <Copy size={15} /> Copy command
+            </Button>
+            <Button kind="ghost" disabled={!!busy || !enabled} onClick={() => void generate()}>
+              {busy === 'pair' ? <Loader2 size={15} className="spin" /> : <RefreshCw size={15} />}{' '}
+              New code
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <Button
+          className="full runner-pair-button"
+          kind="primary"
+          disabled={!!busy || !enabled}
+          onClick={() => void generate()}
+        >
+          {busy === 'pair' ? <Loader2 size={16} className="spin" /> : <Link2 size={16} />} Create
+          pairing command
+        </Button>
+      )}
+      <section className="runner-list" aria-label="Your connected runners">
+        <div className="runner-list-heading">
+          <span className="eyebrow">YOUR RUNNERS</span>
+          <span>{runners.length}</span>
+        </div>
+        {runners.length ? (
+          runners.map((runner) => (
+            <div className="runner-row" key={runner.id}>
+              <Monitor size={18} />
+              <div>
+                <strong>{runner.name}</strong>
+                <span>
+                  {runner.harness === 'claude' ? 'Claude' : 'Codex'}{' '}
+                  <span className={`runner-status ${runner.status}`}>{runner.status}</span>
+                </span>
+              </div>
+              <button
+                className="button ghost"
+                type="button"
+                disabled={!!busy || !enabled}
+                onClick={() => void revoke(runner.id)}
+                aria-label={`Disconnect ${runner.name}`}
+              >
+                {busy === runner.id ? <Loader2 size={13} className="spin" /> : <X size={13} />}{' '}
+                Disconnect
+              </button>
+            </div>
+          ))
+        ) : (
+          <p className="form-note">
+            Your computer will appear here when the runner connects. Then choose it when adding an
+            agent.
+          </p>
+        )}
+        {runners.length > 0 && (
+          <p className="form-note">
+            Disconnecting stops this runner’s agent sessions. Their local worktrees stay on your
+            computer.
+          </p>
+        )}
+      </section>
+    </Modal>
+  );
+}
+
 function Empty({ icon, title, text }: { icon: ReactNode; title: string; text: string }) {
   return (
     <div className="empty-state">
@@ -1541,7 +1836,9 @@ function AgentCard({
   const [follow, setFollow] = useState(true);
   const scroll = useRef<HTMLDivElement>(null);
   const owner = room.members.find((m) => m.id === agent.ownerId);
-  const canControl = session.memberId === agent.ownerId || session.memberId === room.hostId;
+  const canControl =
+    session.memberId === agent.ownerId || (!agent.runnerId && session.memberId === room.hostId);
+  const runner = (room.runners ?? []).find((item) => item.id === agent.runnerId);
   const canPrompt = agent.status === 'idle' || (agent.status === 'error' && !agent.error);
   const waiting = room.decisions.some((d) => d.agentId === agent.id && activeDecision(d));
   useEffect(() => {
@@ -1557,6 +1854,12 @@ function AgentCard({
     }
     setBusy(false);
   }
+  async function restart() {
+    if (busy || !canControl || runner?.status !== 'online') return;
+    setBusy(true);
+    await action(`/api/agents/${agent.id}/restart`);
+    setBusy(false);
+  }
   return (
     <article className={`agent-card ${colors[agent.color]}`}>
       <header className="agent-header">
@@ -1566,11 +1869,19 @@ function AgentCard({
         <div className="agent-title">
           <h2>
             {agent.name}
-            <span>Codex</span>
+            <span>{agent.harness === 'claude' ? 'Claude' : 'Codex'}</span>
           </h2>
           <p>
             {room.mode === 'demo' ? 'Demo session' : owner?.name || 'Teammate'}
             <span>·</span>
+            {room.mode === 'live' && (
+              <>
+                <span className="agent-device" title={runner?.name}>
+                  {agent.runnerId ? runner?.name || 'Local runner' : 'Server'}
+                </span>
+                <span>·</span>
+              </>
+            )}
             {agent.branch}
           </p>
         </div>
@@ -1593,6 +1904,7 @@ function AgentCard({
               waiting: 'Needs input',
               starting: 'Connecting',
               error: 'Error',
+              offline: 'Runner offline',
             }[agent.status]
           }
         </span>
@@ -1659,7 +1971,8 @@ function AgentCard({
                       'SOMETHING NEEDS ATTENTION'
                     ) : (
                       <>
-                        <span className="codex-tiny">✳</span> CODEX
+                        <span className="codex-tiny">✳</span>{' '}
+                        {agent.harness === 'claude' ? 'CLAUDE' : 'CODEX'}
                       </>
                     )}
                   </span>
@@ -1706,6 +2019,25 @@ function AgentCard({
           ))}
         </div>
       )}
+      {agent.runnerId && ['error', 'offline'].includes(agent.status) && (
+        <div className="agent-recovery" role="status">
+          <p>
+            {agent.status === 'offline'
+              ? `${canControl ? 'Keep your' : `${owner?.name ?? 'The owner'} needs to keep their`} runner terminal open. Use its saved resume command to reconnect.`
+              : 'Restart the conversation in the same worktree. Your file changes stay intact.'}
+          </p>
+          {agent.status === 'error' && canControl && (
+            <button
+              type="button"
+              disabled={!enabled || busy || runner?.status !== 'online'}
+              onClick={() => void restart()}
+            >
+              {busy ? <Loader2 size={13} className="spin" /> : <RefreshCw size={13} />}
+              Restart session
+            </button>
+          )}
+        </div>
+      )}
       <div className="agent-input-wrap">
         <form className="agent-input" onSubmit={send}>
           <input
@@ -1717,7 +2049,9 @@ function AgentCard({
                 ? `${owner?.name} is driving this session`
                 : agent.status === 'waiting'
                   ? 'Waiting for a decision…'
-                  : 'Give your agent a direction…'
+                  : agent.status === 'offline'
+                    ? 'Reconnect your runner to continue…'
+                    : 'Give your agent a direction…'
             }
             disabled={!enabled || !canControl || !canPrompt || busy}
             maxLength={12000}
@@ -1802,7 +2136,9 @@ function DecisionCard({
           {d.scope === 'team'
             ? 'TEAM VOTE'
             : d.scope === 'approval'
-              ? 'HOST APPROVAL'
+              ? agent?.runnerId
+                ? 'OWNER APPROVAL'
+                : 'HOST APPROVAL'
               : 'OWNER QUESTION'}
         </span>
         {d.scope === 'team' && (
@@ -1939,7 +2275,8 @@ function DecisionCard({
       {d.scope === 'approval' && (
         <p className="approval-note">
           <ShieldCheck size={12} />
-          The room host must explicitly approve this action.
+          {agent?.runnerId ? 'The agent owner' : 'The room host'} must explicitly approve this
+          action.
         </p>
       )}
     </div>

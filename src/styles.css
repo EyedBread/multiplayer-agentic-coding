@@ -518,11 +518,13 @@ label {
   margin: 16px 0 0;
 }
 label input,
-label textarea {
+label textarea,
+label select {
   margin-top: 8px;
 }
 input,
-textarea {
+textarea,
+select {
   width: 100%;
   background: #151a13;
   border: 1px solid #374030;
@@ -3202,4 +3204,215 @@ textarea {
 }
 .different-profile:hover {
   color: #dbe7c8;
+}
+.field-help {
+  display: block;
+  margin-top: 8px;
+  color: #8f9d82;
+  font-size: 11px;
+  line-height: 1.65;
+  font-weight: 400;
+}
+.inline-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  background: transparent;
+  padding: 8px 0 0;
+  color: #c5e796;
+  font-size: 11px;
+}
+.runner-online-count {
+  display: inline-grid;
+  place-items: center;
+  min-width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  background: #c5e796;
+  color: #1a2512;
+  font: 9px var(--mono);
+}
+.runner-setup-note {
+  display: flex;
+  gap: 12px;
+  padding: 15px 0;
+  border-top: 1px solid #35402b;
+  border-bottom: 1px solid #35402b;
+  color: #aab79b;
+}
+.runner-setup-note > svg {
+  flex-shrink: 0;
+  color: #c6dca6;
+  margin-top: 3px;
+}
+.runner-setup-note p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.75;
+}
+.runner-setup-note a {
+  color: #c9e7a2;
+  text-underline-offset: 3px;
+}
+.runner-setup-note code,
+.runner-pairing code {
+  color: #c9d6bb;
+  font: 10px var(--mono);
+}
+.runner-pair-button {
+  margin-top: 20px;
+}
+.runner-pairing {
+  margin-top: 22px;
+  padding: 15px;
+  background: #151c13;
+  border: 1px solid #3c4a30;
+  border-radius: 8px;
+}
+.runner-pairing-heading,
+.runner-list-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 11px;
+}
+.runner-pairing-heading .eyebrow {
+  font-size: 8px;
+  letter-spacing: 1px;
+}
+.runner-pairing-heading > span:last-child {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+  font: 10px var(--mono);
+  color: #c5d6aa;
+}
+.runner-pairing-heading > .expired {
+  color: #e4aa89 !important;
+}
+.runner-command {
+  min-height: 104px;
+  font: 11px/1.7 var(--mono);
+  background: #10160f;
+  border-color: #303d27;
+  color: #d2e5b8;
+}
+.runner-command-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 13px;
+}
+.runner-list {
+  margin-top: 25px;
+  padding-top: 20px;
+  border-top: 1px solid #35402b;
+}
+.runner-list-heading .eyebrow {
+  margin: 0;
+  font-size: 9px;
+}
+.runner-list-heading > span:last-child {
+  font: 10px var(--mono);
+  color: #899779;
+}
+.runner-row {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 11px 0;
+  border-top: 1px solid #2d3727;
+}
+.runner-row > svg {
+  color: #a1b78a;
+  flex-shrink: 0;
+}
+.runner-row > div {
+  flex: 1;
+  min-width: 0;
+}
+.runner-row strong {
+  display: block;
+  color: #d1dcc5;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.runner-row > div > span {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #899779;
+  font: 9px var(--mono);
+  margin-top: 6px;
+}
+.runner-row .button {
+  font-size: 10px;
+  padding: 6px 0 6px 8px;
+}
+.runner-status {
+  text-transform: uppercase;
+  font-size: 8px;
+  letter-spacing: 0.5px;
+}
+.runner-status.online {
+  color: #c1e78c;
+}
+.runner-status.connecting {
+  color: #d6c4f3;
+}
+.runner-status.offline,
+.agent-status.offline {
+  color: #d9af8d;
+}
+.agent-status.offline .dot {
+  background: #d9af8d;
+}
+.agent-recovery {
+  padding: 11px 16px;
+  background: #30271d;
+  border-top: 1px solid #514332;
+}
+.agent-recovery p {
+  margin: 0;
+  color: #d0b59a;
+  font-size: 10px;
+  line-height: 1.65;
+}
+.agent-recovery button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #eed2b7;
+  font-size: 11px;
+}
+.agent-recovery button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.agent-title p .agent-device {
+  display: inline;
+  font-size: inherit;
+  color: #a0ac92;
+}
+select:focus-visible {
+  outline: 2px solid #a8c178;
+  outline-offset: 2px;
+}
+@media (max-width: 520px) {
+  .runner-pairing {
+    padding: 12px;
+  }
+  .runner-pairing-heading {
+    align-items: flex-start;
+  }
+  .runner-pairing-heading .eyebrow {
+    line-height: 1.6;
+  }
 }
